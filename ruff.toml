@@ -1,0 +1,9 @@
+line-length = 140
+target-version = "py39"
+extend-exclude = [".venv"]
+[lint]
+select = ["E", "F", "W", "B"]
+ignore = ["E701", "E702", "E731", "B017", "B008"]  # B008: Depends()/File() defaults are the FastAPI idiom
+
+[lint.per-file-ignores]
+"groq_client.py" = ["E501"]   # long lines are inside the system-prompt string

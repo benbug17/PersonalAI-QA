@@ -1,0 +1,9 @@
+# Runtime deps for the FastAPI backend (no Streamlit / Whisper / torch needed)
+fastapi>=0.110
+uvicorn>=0.27
+python-multipart>=0.0.9
+pydantic>=2.0
+groq>=0.4.0
+gTTS>=2.4.0
+bcrypt>=4.1.2
+python-dotenv>=1.0.0

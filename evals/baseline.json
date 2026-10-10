@@ -1,0 +1,11 @@
+{
+  "tolerance": 0.15,
+  "min_pass_rate": {
+    "instruction_following": 1.0,
+    "relevance": 1.0,
+    "hallucination": 1.0,
+    "robustness": 1.0,
+    "regression": 1.0,
+    "overall": 1.0
+  }
+}
