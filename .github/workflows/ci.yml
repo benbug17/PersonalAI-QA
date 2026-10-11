@@ -6,7 +6,7 @@ on:
   pull_request:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * 1"   # weekly: catch silent upstream model drift even without code changes
+    - cron: "0 3 * * 1"   
 
 jobs:
   tests:
@@ -39,7 +39,7 @@ jobs:
     name: Live LLM regression eval (Groq)
     runs-on: ubuntu-latest
     needs: tests
-    # Same-repo PRs, pushes to main, manual and scheduled runs. Fork PRs have no secrets.
+    
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     env:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
