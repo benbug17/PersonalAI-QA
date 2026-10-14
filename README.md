@@ -212,7 +212,7 @@ The CI workflow in `.github/workflows/ci.yml` runs lint, the offline tests and t
 My "python -m evals.run" result, for proof:
 
 '''
-~/workspace$ python -m evals.run
+~/workspace/PersonalAI-QA$ python -m evals.run --repeat 3
 PASS if-bicycle
 PASS if-recursion
 PASS if-long-essay-request
