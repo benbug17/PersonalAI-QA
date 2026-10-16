@@ -35,8 +35,8 @@
         "type": "non_empty"
       },
       {
-        "type": "max_words",
-        "value": 150
+        "type": "max_paragraphs",
+        "value": 3
       },
       {
         "type": "no_markdown"
@@ -321,7 +321,7 @@
       },
       {
         "type": "matches_regex",
-        "pattern": "(no (such|built-in)|doesn't (exist|have)|does not (exist|have)|don't have|isn't a|is not a|not a (built|standard)|there is no)"
+        "pattern": "(no (such|built-in)|(doesn't|does not|don't|do not) (actually |really |currently )?(exist|have|provide|include|offer)|isn't a|is not a|not a (built|standard)|there is no)"
       }
     ],
     "pass_examples": [
@@ -365,7 +365,7 @@
       },
       {
         "type": "matches_regex",
-        "pattern": "(\\?|not sure|unclear|clarif|could you|what do you mean|didn't)"
+        "pattern": "(\\?|not sure|unclear|clarif|could you|what do you mean|didn't|random|gibberish|(doesn't|does not) (look|seem|appear)|let me know|what you('d| would) like)"
       }
     ],
     "pass_examples": [
@@ -485,8 +485,8 @@
         "type": "non_empty"
       },
       {
-        "type": "max_words",
-        "value": 40
+        "type": "max_paragraphs",
+        "value": 3
       },
       {
         "type": "matches_regex",

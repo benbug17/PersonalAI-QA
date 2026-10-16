@@ -123,7 +123,8 @@ def main(argv=None) -> int:
         runs = [run_once(case, llm, judge_fn) for _ in range(args.repeat)]
         passed = sum(x["passed"] for x in runs)
         shown = next((x for x in runs if not x["passed"]), runs[0])
-        results.append({**shown, "passed": passed == args.repeat, "pass_count": passed, "repeat": args.repeat})
+        results.append({**shown, "passed": passed == args.repeat, "pass_count": passed, "repeat": args.repeat,
+                        "responses": [x["response"] for x in runs]})  # every repeat, so flaky cases can be inspected
     rates = runner.summarize(results)
 
     for r in results:

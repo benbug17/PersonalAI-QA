@@ -200,3 +200,12 @@ def test_a_failing_judge_verdict_actually_lowers_the_pass_rate(monkeypatch, tmp_
     saved = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
     judged = [r for r in saved["results"] if any(c["type"] == "llm_judge" for c in r["checks"])]
     assert len(judged) == rubric and not any(r["passed"] for r in judged)
+
+
+def test_results_file_keeps_every_repeat_so_flaky_cases_can_be_inspected(monkeypatch, tmp_path):
+    counter = iter(range(10_000))
+    monkeypatch.setattr(groq_client, "get_learning_assistant_response", lambda q, temperature=0.7: f"answer {next(counter)}")
+    run(tmp_path, "--repeat", "3")
+    saved = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
+    for r in saved["results"]:
+        assert len(r["responses"]) == 3 and len(set(r["responses"])) == 3   # three different answers kept, in order
