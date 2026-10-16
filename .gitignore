@@ -1,0 +1,12 @@
+node_modules
+.env
+evals/results/
+app.db
+tts_cache/
+__pycache__/
+.pytest_cache/
+.coverage
+coverage.xml
+reports/
+.venv/
+.ruff_cache/

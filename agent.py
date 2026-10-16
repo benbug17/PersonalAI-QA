@@ -1,0 +1,224 @@
+"""A small LangGraph tool-using agent for PersonalAI (needs Python 3.10+ and requirements-agent.txt).
+
+Graph:   START -> model --(tool calls?)--> tools -> model -> ... -> END
+
+Tools:
+  calculator      exact arithmetic (safe AST evaluation, no eval())
+  search_notes    retrieval over the NoteStore (RAG)
+  current_time    UTC clock
+
+run_agent() returns the answer plus the tool-call trace, so evals can check
+*which tools were used*, not just what was said.
+"""
+from __future__ import annotations
+
+import ast
+import operator
+import os
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.tools import tool
+from langgraph.errors import GraphRecursionError
+from langgraph.graph import END, START, MessagesState, StateGraph  # noqa: F401  (END re-exported for callers)
+from langgraph.prebuilt import ToolNode, tools_condition
+
+import groq_client
+from timing import timed, tracker
+
+# The agent keeps the assistant's persona, spoken-style and safety rules, and adds tool rules on top.
+AGENT_SYSTEM_PROMPT = groq_client.SYSTEM_PROMPT + """
+
+Tools you can call:
+- Use search_notes for any question about the user's own notes or project.
+- Use calculator for arithmetic instead of computing in your head.
+- Use current_time when the user asks for the time or date.
+- Do not use a tool for general knowledge or casual conversation.
+- If search_notes finds nothing relevant, say you could not find it in the notes. Never invent details that were not in a tool result."""
+
+
+class MissingApiKey(RuntimeError):
+    """Raised when GROQ_API_KEY is not configured."""
+
+
+# ---------------------------------------------------------------- calculator
+def _safe_pow(base, exponent):
+    if abs(exponent) > 100:
+        raise ValueError("exponent too large")
+    return operator.pow(base, exponent)
+
+
+_BINARY_OPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: _safe_pow,
+}
+_UNARY_OPS = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+
+
+def safe_eval(expression: str) -> float | int:
+    """Evaluate +, -, *, /, //, %, ** and parentheses on numbers only."""
+    if len(expression) > 200:
+        raise ValueError("expression too long")
+
+    def walk(node):
+        if isinstance(node, ast.Expression):
+            return walk(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+            return node.value
+        if isinstance(node, ast.BinOp) and type(node.op) in _BINARY_OPS:
+            return _BINARY_OPS[type(node.op)](walk(node.left), walk(node.right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY_OPS:
+            return _UNARY_OPS[type(node.op)](walk(node.operand))
+        raise ValueError("unsupported expression")
+
+    return walk(ast.parse(expression.strip(), mode="eval"))
+
+
+def _format_number(value) -> str:
+    if isinstance(value, int):
+        return str(value)
+    return format(value, ".10g")
+
+
+# --------------------------------------------------------------------- tools
+def build_tools(store):
+    @tool
+    def calculator(expression: str) -> str:
+        """Evaluate an arithmetic expression such as '(1250 * 0.18) + 40'. Supports + - * / // % ** and parentheses."""
+        with timed("tool_calculator"):
+            try:
+                return _format_number(safe_eval(expression))
+            except ZeroDivisionError:
+                return "Error: division by zero"
+            except (ValueError, SyntaxError, OverflowError, TypeError):
+                return "Error: could not evaluate that expression"
+
+    @tool
+    def search_notes(query: str) -> str:
+        """Search the user's saved notes and project documentation. Use for questions about their own project or notes."""
+        with timed("tool_search_notes"):
+            hits = store.query(query, k=3)
+            if not hits:
+                return "No relevant notes found."
+            return "\n\n".join(f"[{h['source']}] {h['text']}" for h in hits)
+
+    @tool
+    def current_time() -> str:
+        """Get the current date and time in UTC."""
+        with timed("tool_current_time"):
+            return datetime.now(timezone.utc).strftime("%A %d %B %Y, %H:%M UTC")
+
+    return [calculator, search_notes, current_time]
+
+
+# --------------------------------------------------------------------- graph
+def build_agent(llm, store, system_prompt: str = AGENT_SYSTEM_PROMPT):
+    """Compile the agent graph. `llm` is any LangChain chat model that supports bind_tools."""
+    tools = build_tools(store)
+    model = llm.bind_tools(tools)
+
+    def call_model(state: MessagesState):
+        with timed("agent_llm"):
+            reply = model.invoke([SystemMessage(content=system_prompt)] + state["messages"])
+        usage = getattr(reply, "usage_metadata", None) or {}
+        tracker.record_tokens(usage.get("input_tokens"), usage.get("output_tokens"))
+        return {"messages": [reply]}
+
+    graph = StateGraph(MessagesState)
+    graph.add_node("model", call_model)
+    graph.add_node("tools", ToolNode(tools))
+    graph.add_edge(START, "model")
+    graph.add_conditional_edges("model", tools_condition)
+    graph.add_edge("tools", "model")
+    return graph.compile()
+
+
+@dataclass
+class AgentResult:
+    answer: str
+    tool_calls: list[dict] = field(default_factory=list)
+    llm_calls: int = 0
+    latency_ms: int = 0
+    truncated: bool = False
+
+    @property
+    def tools_used(self) -> list[str]:
+        return [c["name"] for c in self.tool_calls]
+
+
+def _text_of(message) -> str:
+    content = message.content
+    if isinstance(content, str):
+        return content.strip()
+    # some providers return a list of content blocks
+    return " ".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in content).strip()
+
+
+def run_agent(graph, question: str, max_llm_calls: int = 5) -> AgentResult:
+    """Run one question through the agent and return the answer with its tool trace."""
+    start = time.perf_counter()
+    # LangGraph counts its input step too, so n model calls (each followed by a tools step) fit in a
+    # limit of exactly 2n. Measured, not assumed: both boundaries are tested in tests/unit/test_agent.py.
+    config = {"recursion_limit": max_llm_calls * 2}
+    with timed("agent_total"):
+        try:
+            state = graph.invoke({"messages": [HumanMessage(content=question)]}, config=config)
+            messages = state["messages"]
+        except GraphRecursionError:
+            messages = []  # the model kept calling tools without ever answering
+
+    tool_calls: list[dict] = []
+    llm_calls = 0
+    answer = ""
+    for message in messages:
+        if isinstance(message, AIMessage):
+            llm_calls += 1
+            tool_calls.extend({"name": c["name"], "args": c["args"]} for c in message.tool_calls)
+            answer = _text_of(message)  # the last AI message is the final answer
+    truncated = not answer
+    if truncated:
+        answer = "Sorry, I could not finish working that out. Could you rephrase the question?"
+    return AgentResult(
+        answer=answer,
+        tool_calls=tool_calls,
+        llm_calls=llm_calls,
+        latency_ms=round((time.perf_counter() - start) * 1000),
+        truncated=truncated,
+    )
+
+
+# ------------------------------------------------------------ production wiring
+def make_groq_llm(model: str | None = None, temperature: float = 0.0):
+    """LangChain chat model on Groq. Uses the same GROQ_MODEL / reasoning settings as groq_client."""
+    key = os.getenv("GROQ_API_KEY")
+    if not key:
+        raise MissingApiKey("GROQ_API_KEY is not set")
+    from langchain_groq import ChatGroq
+
+    model = model or groq_client.get_model()
+    extra = {"reasoning_effort": "low"} if groq_client._is_reasoning_model(model) else {}
+    # max_tokens=1024: reasoning models spend hidden thinking tokens against this limit
+    return ChatGroq(model=model, temperature=temperature, max_tokens=1024, api_key=key, **extra)
+
+
+_default_graph = None
+
+
+def get_default_graph():
+    """Build (once) the agent used by the API: Groq LLM + Chroma notes store."""
+    global _default_graph
+    if _default_graph is None:
+        from rag import DEFAULT_NOTES_DIR, NoteStore, ingest_directory, sentence_transformer_embedder
+
+        llm = make_groq_llm()
+        store = NoteStore(sentence_transformer_embedder(), path=os.getenv("NOTES_DB", ".chroma"))
+        ingest_directory(store, os.getenv("NOTES_DIR", str(DEFAULT_NOTES_DIR)))
+        _default_graph = build_agent(llm, store)
+    return _default_graph

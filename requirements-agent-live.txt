@@ -1,0 +1,3 @@
+# For actually running POST /agent: the agent stack plus real semantic embeddings (pulls in PyTorch).
+-r requirements-agent.txt
+sentence-transformers>=3.0

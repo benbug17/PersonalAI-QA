@@ -1,0 +1,264 @@
+[
+  {
+    "id": "rag-retired-model",
+    "category": "retrieval",
+    "query": "Which Groq model was retired, and on what date?",
+    "expected_tools": [
+      "search_notes"
+    ],
+    "checks": [
+      {
+        "type": "non_empty"
+      },
+      {
+        "type": "matches_regex",
+        "pattern": "llama-3\\.1-8b-instant"
+      },
+      {
+        "type": "matches_regex",
+        "pattern": "16 august|august 16|2026-08-16"
+      }
+    ],
+    "pass_examples": [
+      "Groq retired llama-3.1-8b-instant on 16 August 2026."
+    ],
+    "fail_examples": [
+      "I believe it was an older llama model, retired some time last year."
+    ]
+  },
+  {
+    "id": "rag-upload-limit",
+    "category": "retrieval",
+    "query": "What happens if someone uploads a file bigger than 10 MB to my API?",
+    "expected_tools": [
+      "search_notes"
+    ],
+    "checks": [
+      {
+        "type": "non_empty"
+      },
+      {
+        "type": "matches_regex",
+        "pattern": "\\b413\\b"
+      }
+    ],
+    "pass_examples": [
+      "It is rejected with a 413 status code."
+    ],
+    "fail_examples": [
+      "It is accepted and stored as normal."
+    ]
+  },
+  {
+    "id": "rag-bcrypt",
+    "category": "retrieval",
+    "query": "In my project, what is the longest password allowed, and why?",
+    "expected_tools": [
+      "search_notes"
+    ],
+    "checks": [
+      {
+        "type": "non_empty"
+      },
+      {
+        "type": "matches_regex",
+        "pattern": "\\b72\\b"
+      },
+      {
+        "type": "matches_regex",
+        "pattern": "bcrypt"
+      }
+    ],
+    "pass_examples": [
+      "72 bytes, because bcrypt cannot use more than 72 bytes."
+    ],
+    "fail_examples": [
+      "There is no limit on password length."
+    ]
+  },
+  {
+    "id": "rag-tolerance",
+    "category": "retrieval",
+    "query": "What tolerance do my eval baseline floors use now?",
+    "expected_tools": [
+      "search_notes"
+    ],
+    "checks": [
+      {
+        "type": "non_empty"
+      },
+      {
+        "type": "matches_regex",
+        "pattern": "\\b15\\b"
+      }
+    ],
+    "pass_examples": [
+      "The tolerance is 15 percent."
+    ],
+    "fail_examples": [
+      "The tolerance is 10 percent."
+    ]
+  },
+  {
+    "id": "rag-not-in-notes",
+    "category": "retrieval",
+    "query": "According to my notes, what is the airspeed velocity of an unladen swallow?",
+    "expected_tools": [
+      "search_notes"
+    ],
+    "checks": [
+      {
+        "type": "non_empty"
+      },
+      {
+        "type": "matches_regex",
+        "pattern": "(not found|couldn't find|could not find|can't find|cannot find|no (relevant )?(notes|information|mention)|don't (see|have)|not in (my|your|the) notes)"
+      },
+      {
+        "type": "not_matches_regex",
+        "pattern": "\\b\\d+(\\.\\d+)?\\s*(mph|miles|km|meters)"
+      }
+    ],
+    "pass_examples": [
+      "I could not find that in your notes."
+    ],
+    "fail_examples": [
+      "The airspeed velocity is about 24 miles per hour."
+    ]
+  },
+  {
+    "id": "calc-multiply",
+    "category": "calculator",
+    "query": "What is 17 times 23?",
+    "expected_tools": [
+      "calculator"
+    ],
+    "checks": [
+      {
+        "type": "non_empty"
+      },
+      {
+        "type": "matches_regex",
+        "pattern": "\\b391\\b"
+      }
+    ],
+    "pass_examples": [
+      "17 times 23 is 391."
+    ],
+    "fail_examples": [
+      "17 times 23 is 381."
+    ]
+  },
+  {
+    "id": "calc-expression",
+    "category": "calculator",
+    "query": "Compute 1250 times 0.18, then add 40.",
+    "expected_tools": [
+      "calculator"
+    ],
+    "checks": [
+      {
+        "type": "non_empty"
+      },
+      {
+        "type": "matches_regex",
+        "pattern": "\\b265\\b"
+      }
+    ],
+    "pass_examples": [
+      "That comes to 265."
+    ],
+    "fail_examples": [
+      "That comes to 225."
+    ]
+  },
+  {
+    "id": "time-now",
+    "category": "clock",
+    "query": "What is the current time in UTC?",
+    "expected_tools": [
+      "current_time"
+    ],
+    "checks": [
+      {
+        "type": "non_empty"
+      },
+      {
+        "type": "matches_regex",
+        "pattern": "(\\d{1,2}[:.]\\d{2}|utc)"
+      }
+    ],
+    "pass_examples": [
+      "It is Thursday 15 October 2026, 14:05 UTC."
+    ],
+    "fail_examples": [
+      "I don't have access to a clock."
+    ]
+  },
+  {
+    "id": "no-tool-capital",
+    "category": "no_tool",
+    "query": "What is the capital of Japan?",
+    "expected_tools": [],
+    "checks": [
+      {
+        "type": "non_empty"
+      },
+      {
+        "type": "matches_regex",
+        "pattern": "tokyo"
+      }
+    ],
+    "pass_examples": [
+      "The capital of Japan is Tokyo."
+    ],
+    "fail_examples": [
+      "The capital of Japan is Kyoto."
+    ]
+  },
+  {
+    "id": "no-tool-chat",
+    "category": "no_tool",
+    "query": "Say hello in one friendly sentence.",
+    "expected_tools": [],
+    "checks": [
+      {
+        "type": "non_empty"
+      },
+      {
+        "type": "max_words",
+        "value": 30
+      }
+    ],
+    "pass_examples": [
+      "Hello! It's lovely to hear from you."
+    ],
+    "fail_examples": [
+      "Hello! And here is a lot more rambling text. And here is a lot more rambling text. And here is a lot more rambling text. And here is a lot more rambling text. And here is a lot more rambling text. And here is a lot more rambling text. And here is a lot more rambling text. And here is a lot more rambling text. And here is a lot more rambling text. And here is a lot more rambling text. "
+    ]
+  },
+  {
+    "id": "multi-limit-times-3",
+    "category": "multi_step",
+    "query": "Look in my notes for the upload size limit in megabytes and multiply it by 3.",
+    "expected_tools": [
+      "calculator",
+      "search_notes"
+    ],
+    "checks": [
+      {
+        "type": "non_empty"
+      },
+      {
+        "type": "matches_regex",
+        "pattern": "\\b30\\b"
+      }
+    ],
+    "pass_examples": [
+      "The upload limit is 10 megabytes, and three times that is 30."
+    ],
+    "fail_examples": [
+      "Three times the limit is 40."
+    ]
+  }
+]
