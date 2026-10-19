@@ -18,6 +18,7 @@ from agent import MissingApiKey, build_agent, make_groq_llm, run_agent
 from evals import runner
 from evals.validators import check
 from rag import DEFAULT_NOTES_DIR, HashingEmbedder, NoteStore, ingest_directory, sentence_transformer_embedder
+from timing import tracker
 
 AGENT_CASES_PATH = os.path.join(runner.HERE, "agent_cases.json")
 DEFAULT_OUT = os.path.join(runner.HERE, "results", "agent_latest.json")
@@ -63,7 +64,8 @@ def summarise(rows: list) -> dict:
     }
 
 
-def evaluate(graph, cases, repeat: int = 1) -> list:
+def evaluate(graph, cases, repeat: int = 1, on_row=None) -> list:
+    """Run every case. `on_row(row)` is called as each case finishes, so a crash still shows how far it got."""
     rows = []
     for case in cases:
         scored, latencies, calls = [], [], []
@@ -80,6 +82,8 @@ def evaluate(graph, cases, repeat: int = 1) -> list:
             "mean_latency_ms": sum(latencies) / repeat, "mean_llm_calls": sum(calls) / repeat,
             "attempts": scored,
         })
+        if on_row:
+            on_row(rows[-1])
     return rows
 
 
@@ -114,7 +118,17 @@ def main(argv=None) -> int:
         print("Preflight agent call failed: the agent never produced an answer.", file=sys.stderr)
         return 2
 
-    rows = evaluate(graph, load_agent_cases(), repeat=args.repeat)
+    finished = []
+    try:
+        rows = evaluate(graph, load_agent_cases(), repeat=args.repeat, on_row=finished.append)
+    except Exception as exc:  # noqa: BLE001 - report any provider failure cleanly instead of a traceback
+        if getattr(exc, "status_code", None) == 429:
+            print("Stopped: Groq rate limit reached (probably the daily token quota). Wait for it to reset, "
+                  "or run with --repeat 1 to use about a third of the tokens.", file=sys.stderr)
+        else:
+            print(f"Stopped: {exc}", file=sys.stderr)
+        print(f"{len(finished)} case(s) finished before the stop. Nothing was saved.", file=sys.stderr)
+        return 2
     for row in rows:
         label = "PASS  " if row["passed"] else (f"FLAKY({row['pass_count']}/{row['repeat']}) " if row["pass_count"] else "FAIL  ")
         print(f"{label}{row['id']}  ({row['mean_latency_ms']:.0f} ms, {row['mean_llm_calls']:.1f} LLM calls)")
@@ -125,6 +139,8 @@ def main(argv=None) -> int:
     s = summarise(rows)
     print(f"\ntool_selection={s['tool_selection']:.0%}  answer_correct={s['answer_correct']:.0%}  overall={s['overall']:.0%}  "
           f"mean_latency={s['mean_latency_ms']} ms  mean_llm_calls={s['mean_llm_calls']}")
+    t = tracker.summary()["tokens"]
+    print(f"LLM calls: {t['llm_calls']}, tokens used: {t['prompt_tokens']} prompt + {t['completion_tokens']} completion")
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump({"summary": s, "rows": rows}, f, indent=2, ensure_ascii=False)

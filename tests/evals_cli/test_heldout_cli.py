@@ -209,3 +209,26 @@ def test_results_file_keeps_every_repeat_so_flaky_cases_can_be_inspected(monkeyp
     saved = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
     for r in saved["results"]:
         assert len(r["responses"]) == 3 and len(set(r["responses"])) == 3   # three different answers kept, in order
+
+
+def test_a_run_reports_token_use_when_the_api_reports_it(monkeypatch, tmp_path, capsys):
+    from timing import tracker
+    tracker.reset()
+
+    def answer(q, temperature=0.7):
+        tracker.record_tokens(100, 40)
+        return "yes"
+    monkeypatch.setattr(groq_client, "get_learning_assistant_response", answer)
+    run(tmp_path)
+    out = capsys.readouterr().out
+    n = len(CASES) + 1   # every case plus the preflight call
+    assert f"LLM calls: {n}, tokens used: {n * 100} prompt + {n * 40} completion" in out
+    tracker.reset()
+
+
+def test_no_token_line_when_the_api_reports_no_usage(monkeypatch, tmp_path, capsys):
+    from timing import tracker
+    tracker.reset()
+    stub_llm(monkeypatch)
+    run(tmp_path)
+    assert "tokens used" not in capsys.readouterr().out

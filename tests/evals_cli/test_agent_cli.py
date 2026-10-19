@@ -148,3 +148,64 @@ def test_bench_agent_setup_problem_exit_2(monkeypatch, capsys):
     monkeypatch.setattr(agent, "get_default_graph", cannot_start)
     assert bench.main(["--n", "1", "--agent"]) == 2
     assert "Agent setup problem" in capsys.readouterr().err
+
+
+# ---- provider failures mid-run (e.g. Groq's daily token quota) ---------------------------------
+class FakeProviderError(Exception):
+    def __init__(self, message, status_code):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+TWO_CASES = ONE_CASE + [dict(ONE_CASE[0], id="calc2")]
+
+
+def good_result():
+    return agent.AgentResult(answer="It is 391.", tool_calls=[{"name": "calculator", "args": {}}], llm_calls=2, latency_ms=5)
+
+
+def script_run_agent(monkeypatch, *outcomes):
+    """Replace run_agent: each call returns the next outcome, or raises it if it is an exception."""
+    it = iter(outcomes)
+
+    def fake(graph, question, **kwargs):
+        outcome = next(it)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+    monkeypatch.setattr(agent_run, "run_agent", fake)
+
+
+def test_rate_limit_mid_run_is_a_clean_exit_2_not_a_traceback(monkeypatch, tmp_path, capsys):
+    use_script(monkeypatch, final("unused"), cases=TWO_CASES)
+    # preflight ok, first case ok, second case hits the daily token quota
+    script_run_agent(monkeypatch, good_result(), good_result(), FakeProviderError("tokens per day", 429))
+    assert run(tmp_path) == 2
+    err = capsys.readouterr().err
+    assert "rate limit" in err and "--repeat 1" in err
+    assert "1 case(s) finished before the stop. Nothing was saved." in err
+    assert "Traceback" not in err
+    assert not (tmp_path / "out.json").exists()
+
+
+def test_any_other_provider_error_is_reported_without_the_rate_limit_advice(monkeypatch, tmp_path, capsys):
+    use_script(monkeypatch, final("unused"))
+    script_run_agent(monkeypatch, good_result(), RuntimeError("connection reset"))
+    assert run(tmp_path) == 2
+    err = capsys.readouterr().err
+    assert "Stopped: connection reset" in err and "rate limit" not in err
+    assert "0 case(s) finished" in err
+
+
+def test_on_row_reports_each_finished_case(monkeypatch):
+    seen = []
+    script_run_agent(monkeypatch, good_result(), good_result())
+    rows = agent_run.evaluate(object(), TWO_CASES, on_row=seen.append)
+    assert [r["id"] for r in seen] == ["calc", "calc2"] == [r["id"] for r in rows]
+
+
+def test_a_finished_run_reports_how_many_tokens_it_used(monkeypatch, tmp_path, capsys):
+    use_script(monkeypatch, final("Hello!"), tool_call("calculator", {"expression": "17 * 23"}), final("It is 391."))
+    assert run(tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "LLM calls: 3, tokens used: 20 prompt + 10 completion" in out

@@ -140,6 +140,9 @@ def main(argv=None) -> int:
     if gen:
         print(f"Generation latency: p50 {gen['p50_ms']} ms, p95 {gen['p95_ms']} ms over {gen['count']} cases")
 
+    t = tracker.summary()["tokens"]
+    if t["llm_calls"]:
+        print(f"LLM calls: {t['llm_calls']}, tokens used: {t['prompt_tokens']} prompt + {t['completion_tokens']} completion")
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump({"freeze_status": status, "judge": args.judge, "rates": rates, "results": results},
