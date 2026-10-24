@@ -2,7 +2,7 @@
   {
     "id": "rag-retired-model",
     "category": "retrieval",
-    "query": "Which Groq model was retired, and on what date?",
+    "query": "In my project notes, which Groq model was retired, and on what date?",
     "expected_tools": [
       "search_notes"
     ],
@@ -16,20 +16,21 @@
       },
       {
         "type": "matches_regex",
-        "pattern": "16 august|august 16|2026-08-16"
+        "pattern": "(16 august|august 16|2026-08-16|16th of august|august 16th|august sixteenth|sixteenth of august)"
       }
     ],
     "pass_examples": [
-      "Groq retired llama-3.1-8b-instant on 16 August 2026."
+      "Groq retired llama-3.1-8b-instant on 16 August 2026.",
+      "Groq retired llama-3.1-8b-instant on the sixteenth of August, 2026."
     ],
     "fail_examples": [
       "I believe it was an older llama model, retired some time last year."
     ]
   },
   {
-    "id": "rag-upload-limit",
+    "id": "rag-question-length",
     "category": "retrieval",
-    "query": "What happens if someone uploads a file bigger than 10 MB to my API?",
+    "query": "According to my notes, how many characters can a question have before my API rejects it?",
     "expected_tools": [
       "search_notes"
     ],
@@ -39,14 +40,15 @@
       },
       {
         "type": "matches_regex",
-        "pattern": "\\b413\\b"
+        "pattern": "(\\b2,?000\\b|two thousand)"
       }
     ],
     "pass_examples": [
-      "It is rejected with a 413 status code."
+      "Questions longer than 2000 characters are rejected.",
+      "Questions longer than two thousand characters are rejected."
     ],
     "fail_examples": [
-      "It is accepted and stored as normal."
+      "There is no limit on question length."
     ]
   },
   {
@@ -62,7 +64,7 @@
       },
       {
         "type": "matches_regex",
-        "pattern": "\\b72\\b"
+        "pattern": "(\\b72\\b|seventy[- ]two)"
       },
       {
         "type": "matches_regex",
@@ -70,7 +72,8 @@
       }
     ],
     "pass_examples": [
-      "72 bytes, because bcrypt cannot use more than 72 bytes."
+      "72 bytes, because bcrypt cannot use more than 72 bytes.",
+      "Seventy-two bytes, because bcrypt cannot use more than that."
     ],
     "fail_examples": [
       "There is no limit on password length."
@@ -89,11 +92,12 @@
       },
       {
         "type": "matches_regex",
-        "pattern": "\\b15\\b"
+        "pattern": "(\\b15\\b|fifteen)"
       }
     ],
     "pass_examples": [
-      "The tolerance is 15 percent."
+      "The tolerance is 15 percent.",
+      "The tolerance is fifteen percent."
     ],
     "fail_examples": [
       "The tolerance is 10 percent."
@@ -139,11 +143,12 @@
       },
       {
         "type": "matches_regex",
-        "pattern": "\\b391\\b"
+        "pattern": "(\\b391\\b|three hundred (and )?ninety[- ]one)"
       }
     ],
     "pass_examples": [
-      "17 times 23 is 391."
+      "17 times 23 is 391.",
+      "Seventeen times twenty-three is three hundred ninety-one."
     ],
     "fail_examples": [
       "17 times 23 is 381."
@@ -162,11 +167,12 @@
       },
       {
         "type": "matches_regex",
-        "pattern": "\\b265\\b"
+        "pattern": "(\\b265\\b|two hundred (and )?sixty[- ]five)"
       }
     ],
     "pass_examples": [
-      "That comes to 265."
+      "That comes to 265.",
+      "That comes to two hundred sixty-five."
     ],
     "fail_examples": [
       "That comes to 225."
@@ -251,14 +257,16 @@
       },
       {
         "type": "matches_regex",
-        "pattern": "\\b30\\b"
+        "pattern": "(\\b30\\b|thirty(?!-))"
       }
     ],
     "pass_examples": [
-      "The upload limit is 10 megabytes, and three times that is 30."
+      "The upload limit is 10 megabytes, and three times that is 30.",
+      "The limit is ten megabytes, and three times that is thirty."
     ],
     "fail_examples": [
-      "Three times the limit is 40."
+      "Three times the limit is 40.",
+      "Three times the limit is thirty-one."
     ]
   }
 ]

@@ -41,6 +41,8 @@ class HashingEmbedder:
         for token in re.findall(r"\w+", text.lower()):
             if token in _STOPWORDS:
                 continue
+            if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+                token = token[:-1]  # crude plural stripping: "passwords" matches "password"
             digest = hashlib.md5(token.encode()).digest()
             vec[int.from_bytes(digest[:4], "big") % self.dim] += 1.0
         norm = math.sqrt(sum(v * v for v in vec))
@@ -62,6 +64,35 @@ def sentence_transformer_embedder(model_name: str = "sentence-transformers/all-M
     return embed
 
 
+def onnx_embedder() -> EmbedFn:
+    """Real semantic embeddings via Chroma's bundled MiniLM model on ONNX. No PyTorch needed.
+
+    The model file (about 80 MB) is downloaded the first time it is used.
+    """
+    from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+
+    model = DefaultEmbeddingFunction()
+
+    def embed(texts: Sequence[str]) -> list[list[float]]:
+        return [[float(x) for x in vector] for vector in model(list(texts))]
+
+    return embed
+
+
+EMBEDDERS = ("st", "onnx", "hashing")
+
+
+def get_embedder(name: str) -> EmbedFn:
+    """Look an embedder up by name: st (sentence-transformers), onnx (Chroma's bundled model) or hashing (offline stand-in)."""
+    if name == "st":
+        return sentence_transformer_embedder()
+    if name == "onnx":
+        return onnx_embedder()
+    if name == "hashing":
+        return HashingEmbedder()
+    raise ValueError(f"unknown embedder {name!r}; choose one of {', '.join(EMBEDDERS)}")
+
+
 def chunk_text(text: str, size: int = 120, overlap: int = 20) -> list[str]:
     """Split text into overlapping word windows."""
     if overlap >= size:
@@ -75,6 +106,30 @@ def chunk_text(text: str, size: int = 120, overlap: int = 20) -> list[str]:
         chunks.append(" ".join(words[start:start + size]))
         if start + size >= len(words):
             break
+    return chunks
+
+
+def chunk_paragraphs(text: str, size: int = 120, overlap: int = 20) -> list[str]:
+    """Chunk by paragraph so each fact stays in its own chunk; split only paragraphs longer than `size` words.
+
+    A one-line markdown heading is kept with the paragraph that follows it, so a chunk keeps its context.
+    """
+    chunks: list[str] = []
+    heading = ""
+    for paragraph in (p.strip() for p in re.split(r"\n\s*\n", text)):
+        if not paragraph:
+            continue
+        if paragraph.startswith("#") and "\n" not in paragraph:
+            heading = paragraph
+            continue
+        body = f"{heading}\n\n{paragraph}" if heading else paragraph
+        heading = ""
+        if len(body.split()) > size:
+            chunks.extend(chunk_text(body, size=size, overlap=overlap))
+        else:
+            chunks.append(body)
+    if heading:  # a heading with nothing after it
+        chunks.append(heading)
     return chunks
 
 
@@ -94,8 +149,8 @@ class NoteStore:
         return self._col.count()
 
     def add_text(self, source: str, text: str, size: int = 120, overlap: int = 20) -> int:
-        """Index one document. Re-adding the same source replaces its old chunks."""
-        chunks = chunk_text(text, size=size, overlap=overlap)
+        """Index one document, one chunk per paragraph. Re-adding the same source replaces its old chunks."""
+        chunks = chunk_paragraphs(text, size=size, overlap=overlap)
         self._col.delete(where={"source": source})
         if not chunks:
             return 0

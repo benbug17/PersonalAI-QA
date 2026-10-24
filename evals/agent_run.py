@@ -14,10 +14,10 @@ import uuid
 
 from dotenv import load_dotenv
 
-from agent import MissingApiKey, build_agent, make_groq_llm, run_agent
+from agent import build_agent, make_groq_llm, run_agent
 from evals import runner
 from evals.validators import check
-from rag import DEFAULT_NOTES_DIR, HashingEmbedder, NoteStore, ingest_directory, sentence_transformer_embedder
+from rag import DEFAULT_NOTES_DIR, EMBEDDERS, NoteStore, get_embedder, ingest_directory
 from timing import tracker
 
 AGENT_CASES_PATH = os.path.join(runner.HERE, "agent_cases.json")
@@ -44,10 +44,12 @@ def score_case(case: dict, result) -> dict:
     tool_ok = expected == used
     if not tool_ok:
         failures.append(f"tools: expected {sorted(expected)}, used {sorted(used)}")
-    if result.truncated:
+    if result.error:
+        failures.append(f"agent error: {result.error}")
+    elif result.truncated:
         failures.append("agent gave up (hit the step limit)")
     answer_checks = score_answer(case, result.answer)
-    answer_ok = all(c["passed"] for c in answer_checks) and not result.truncated
+    answer_ok = all(c["passed"] for c in answer_checks) and not result.truncated and not result.error
     failures.extend(f"answer {c['type']}: {c['detail']}" for c in answer_checks if not c["passed"])
     return {"tool_ok": tool_ok, "answer_ok": answer_ok, "passed": not failures, "failures": failures}
 
@@ -90,8 +92,9 @@ def evaluate(graph, cases, repeat: int = 1, on_row=None) -> list:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repeat", type=int, default=1)
-    ap.add_argument("--embedder", choices=["st", "hashing"], default="st",
-                    help="st = real sentence-transformers embeddings; hashing = offline stand-in")
+    ap.add_argument("--embedder", choices=EMBEDDERS, default="st",
+                    help="st = sentence-transformers (needs PyTorch); onnx = Chroma's bundled MiniLM (no PyTorch); "
+                         "hashing = crude offline stand-in, NOT a fair test of retrieval")
     ap.add_argument("--out", default=DEFAULT_OUT)
     args = ap.parse_args(argv)
     if args.repeat < 1:
@@ -101,13 +104,12 @@ def main(argv=None) -> int:
     load_dotenv()
     try:
         llm = make_groq_llm()
-        embed = sentence_transformer_embedder() if args.embedder == "st" else HashingEmbedder()
-    except (MissingApiKey, RuntimeError) as exc:
+        store = NoteStore(get_embedder(args.embedder), collection=f"agent-eval-{uuid.uuid4().hex[:8]}")
+        ingest_directory(store, DEFAULT_NOTES_DIR)
+    except Exception as exc:  # noqa: BLE001 - key, missing package, or the embedding model failing to download
         print(f"Setup problem: {exc}", file=sys.stderr)
         return 2
 
-    store = NoteStore(embed, collection=f"agent-eval-{uuid.uuid4().hex[:8]}")
-    ingest_directory(store, DEFAULT_NOTES_DIR)
     graph = build_agent(llm, store)
     try:
         preflight = run_agent(graph, "Say hello in one sentence.")
@@ -127,8 +129,13 @@ def main(argv=None) -> int:
                   "or run with --repeat 1 to use about a third of the tokens.", file=sys.stderr)
         else:
             print(f"Stopped: {exc}", file=sys.stderr)
-        print(f"{len(finished)} case(s) finished before the stop. Nothing was saved.", file=sys.stderr)
+        os.makedirs(os.path.dirname(args.out), exist_ok=True)
+        with open(args.out, "w", encoding="utf-8") as f:
+            json.dump({"partial": True, "stopped": str(exc)[:300], "rows": finished}, f, indent=2, ensure_ascii=False)
+        print(f"{len(finished)} case(s) finished before the stop. Partial results saved to {args.out} (marked partial).",
+              file=sys.stderr)
         return 2
+
     for row in rows:
         label = "PASS  " if row["passed"] else (f"FLAKY({row['pass_count']}/{row['repeat']}) " if row["pass_count"] else "FAIL  ")
         print(f"{label}{row['id']}  ({row['mean_latency_ms']:.0f} ms, {row['mean_llm_calls']:.1f} LLM calls)")

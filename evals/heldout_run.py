@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 import groq_client
-from evals import runner
+from evals import llm_judge, runner
 from timing import timed, tracker
 
 HELDOUT_PATH = os.path.join(runner.HERE, "heldout_cases.json")
@@ -92,13 +92,17 @@ def main(argv=None) -> int:
 
     judge_fn = None
     if args.judge:
-        from evals import llm_judge
         try:
             backend = llm_judge.groq_call_llm()
         except llm_judge.JudgeConfigError as exc:
             print(exc, file=sys.stderr)
             return 2
-        report = llm_judge.calibrate(backend)
+        try:
+            report = llm_judge.calibrate(backend)
+        except llm_judge.JudgeError as exc:
+            print(f"The judge model gave no usable answer ({exc}). Check that JUDGE_MODEL={os.getenv('JUDGE_MODEL')!r} is a "
+                  "model your key can use (see Settings > Limits) and that you have quota left.", file=sys.stderr)
+            return 2
         print(f"Judge calibration: {report['agreement']:.0%} agreement over {report['pairs']} good/bad pairs")
         if report["agreement"] < 0.85:
             print("The judge cannot reliably tell good answers from bad ones (needs >= 85%). Pick a stronger JUDGE_MODEL.",
@@ -119,12 +123,17 @@ def main(argv=None) -> int:
         return None
 
     results = []
-    for case in cases:
-        runs = [run_once(case, llm, judge_fn) for _ in range(args.repeat)]
-        passed = sum(x["passed"] for x in runs)
-        shown = next((x for x in runs if not x["passed"]), runs[0])
-        results.append({**shown, "passed": passed == args.repeat, "pass_count": passed, "repeat": args.repeat,
-                        "responses": [x["response"] for x in runs]})  # every repeat, so flaky cases can be inspected
+    try:
+        for case in cases:
+            runs = [run_once(case, llm, judge_fn) for _ in range(args.repeat)]
+            passed = sum(x["passed"] for x in runs)
+            shown = next((x for x in runs if not x["passed"]), runs[0])
+            results.append({**shown, "passed": passed == args.repeat, "pass_count": passed, "repeat": args.repeat,
+                            "responses": [x["response"] for x in runs]})  # every repeat, so flaky cases can be inspected
+    except llm_judge.JudgeError as exc:
+        print(f"Stopped: the judge could not score a case ({exc}). That is a judge problem, not a model failure, "
+              f"so nothing was saved. {len(results)} case(s) had finished.", file=sys.stderr)
+        return 2
     rates = runner.summarize(results)
 
     for r in results:

@@ -33,7 +33,8 @@ AGENT_SYSTEM_PROMPT = groq_client.SYSTEM_PROMPT + """
 
 Tools you can call:
 - Use search_notes for any question about the user's own notes or project.
-- Use calculator for arithmetic instead of computing in your head.
+- Always use calculator for arithmetic, even for simple sums, instead of computing in your head.
+- If a question needs both a notes lookup and arithmetic, look the number up first, then pass it to calculator.
 - Use current_time when the user asks for the time or date.
 - Do not use a tool for general knowledge or casual conversation.
 - If search_notes finds nothing relevant, say you could not find it in the notes. Never invent details that were not in a tool result."""
@@ -147,6 +148,7 @@ class AgentResult:
     llm_calls: int = 0
     latency_ms: int = 0
     truncated: bool = False
+    error: str | None = None  # set when the provider kept rejecting a malformed tool call
 
     @property
     def tools_used(self) -> list[str]:
@@ -161,18 +163,38 @@ def _text_of(message) -> str:
     return " ".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in content).strip()
 
 
-def run_agent(graph, question: str, max_llm_calls: int = 5) -> AgentResult:
-    """Run one question through the agent and return the answer with its tool trace."""
+def is_tool_call_glitch(exc: Exception) -> bool:
+    """True for the provider's 400 'tool_use_failed': the model wrote a malformed tool call (for example a
+    stray formatting token inside the tool name) and the API refused it. Retrying usually works."""
+    return getattr(exc, "status_code", None) == 400 and "tool_use_failed" in str(exc)
+
+
+def run_agent(graph, question: str, max_llm_calls: int = 5, retries: int = 2) -> AgentResult:
+    """Run one question through the agent and return the answer with its tool trace.
+
+    A malformed tool call rejected by the provider is retried up to `retries` times. If it keeps failing the
+    result carries `error` instead of raising, so one bad generation cannot kill a whole evaluation run.
+    Any other provider error (rate limit, network) still raises.
+    """
     start = time.perf_counter()
     # LangGraph counts its input step too, so n model calls (each followed by a tools step) fit in a
     # limit of exactly 2n. Measured, not assumed: both boundaries are tested in tests/unit/test_agent.py.
     config = {"recursion_limit": max_llm_calls * 2}
+    messages: list = []
+    error = None
     with timed("agent_total"):
-        try:
-            state = graph.invoke({"messages": [HumanMessage(content=question)]}, config=config)
-            messages = state["messages"]
-        except GraphRecursionError:
-            messages = []  # the model kept calling tools without ever answering
+        for attempt in range(1, retries + 2):
+            try:
+                state = graph.invoke({"messages": [HumanMessage(content=question)]}, config=config)
+                messages, error = state["messages"], None
+                break
+            except GraphRecursionError:
+                error = None  # the model kept calling tools without ever answering
+                break
+            except Exception as exc:  # noqa: BLE001 - only the tool-call glitch is handled; the rest is re-raised
+                if not is_tool_call_glitch(exc):
+                    raise
+                error = f"malformed tool call rejected by the provider after {attempt} attempt(s): {str(exc)[:160]}"
 
     tool_calls: list[dict] = []
     llm_calls = 0
@@ -182,8 +204,8 @@ def run_agent(graph, question: str, max_llm_calls: int = 5) -> AgentResult:
             llm_calls += 1
             tool_calls.extend({"name": c["name"], "args": c["args"]} for c in message.tool_calls)
             answer = _text_of(message)  # the last AI message is the final answer
-    truncated = not answer
-    if truncated:
+    truncated = not answer and not error
+    if truncated or error:
         answer = "Sorry, I could not finish working that out. Could you rephrase the question?"
     return AgentResult(
         answer=answer,
@@ -191,6 +213,7 @@ def run_agent(graph, question: str, max_llm_calls: int = 5) -> AgentResult:
         llm_calls=llm_calls,
         latency_ms=round((time.perf_counter() - start) * 1000),
         truncated=truncated,
+        error=error,
     )
 
 
@@ -215,10 +238,10 @@ def get_default_graph():
     """Build (once) the agent used by the API: Groq LLM + Chroma notes store."""
     global _default_graph
     if _default_graph is None:
-        from rag import DEFAULT_NOTES_DIR, NoteStore, ingest_directory, sentence_transformer_embedder
+        from rag import DEFAULT_NOTES_DIR, NoteStore, get_embedder, ingest_directory
 
         llm = make_groq_llm()
-        store = NoteStore(sentence_transformer_embedder(), path=os.getenv("NOTES_DB", ".chroma"))
+        store = NoteStore(get_embedder(os.getenv("NOTES_EMBEDDER", "st")), path=os.getenv("NOTES_DB", ".chroma"))
         ingest_directory(store, os.getenv("NOTES_DIR", str(DEFAULT_NOTES_DIR)))
         _default_graph = build_agent(llm, store)
     return _default_graph

@@ -50,6 +50,9 @@ def make_router(auth_dependency: Callable, graph_factory: Optional[Callable] = N
         except Exception:
             logger.exception("Agent call failed")
             raise HTTPException(status_code=502, detail="Agent call failed") from None
+        if result.error:
+            logger.error("Agent gave no answer: %s", result.error)
+            raise HTTPException(status_code=502, detail="Agent call failed")
         return AgentResponse(
             answer=result.answer,
             tools_used=result.tools_used,

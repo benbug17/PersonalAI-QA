@@ -1,0 +1,479 @@
+{
+  "summary": {
+    "cases": 11,
+    "tool_selection": 0.9090909090909091,
+    "answer_correct": 1.0,
+    "overall": 0.9090909090909091,
+    "mean_latency_ms": 6025,
+    "mean_llm_calls": 1.82
+  },
+  "rows": [
+    {
+      "id": "rag-retired-model",
+      "passed": true,
+      "flaky": false,
+      "pass_count": 3,
+      "repeat": 3,
+      "tool_ok": true,
+      "answer_ok": true,
+      "mean_latency_ms": 746.3333333333334,
+      "mean_llm_calls": 2.0,
+      "attempts": [
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "search_notes"
+          ],
+          "answer": "The Groq model that was retired is llama‑3.1‑8b‑instant, and it was retired on 16 August 2026."
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "search_notes"
+          ],
+          "answer": "The Groq model that was retired is llama‑3.1‑8b‑instant, and it was retired on 16 August 2026."
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "search_notes"
+          ],
+          "answer": "The Groq model that was retired is llama‑3.1‑8b‑instant, and it was retired on 16 August 2026."
+        }
+      ]
+    },
+    {
+      "id": "rag-question-length",
+      "passed": true,
+      "flaky": false,
+      "pass_count": 3,
+      "repeat": 3,
+      "tool_ok": true,
+      "answer_ok": true,
+      "mean_latency_ms": 1653.0,
+      "mean_llm_calls": 2.0,
+      "attempts": [
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "search_notes"
+          ],
+          "answer": "Your notes say that a question longer than 2000 characters will be rejected by the API."
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "search_notes"
+          ],
+          "answer": "Your notes say that if a question is longer than 2000 characters, the API will reject it with a 422 error."
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "search_notes"
+          ],
+          "answer": "Your notes say that if a question is longer than 2000 characters, the API will reject it with a 422 error."
+        }
+      ]
+    },
+    {
+      "id": "rag-bcrypt",
+      "passed": true,
+      "flaky": false,
+      "pass_count": 3,
+      "repeat": 3,
+      "tool_ok": true,
+      "answer_ok": true,
+      "mean_latency_ms": 6954.666666666667,
+      "mean_llm_calls": 2.0,
+      "attempts": [
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "search_notes"
+          ],
+          "answer": "The longest password your system will accept is 72 bytes. That limit comes from the bcrypt hashing algorithm you’re using. Bcrypt can only process the first 72 bytes of a password; anything longer is truncated, so the system rejects passwords that exceed that length to avoid unexpected behavior."
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "search_notes"
+          ],
+          "answer": "The longest password your system accepts is 72 bytes. That limit comes from the bcrypt hashing algorithm you’re using. Bcrypt can only process the first 72 bytes of a password; anything longer is truncated, so the system rejects passwords that exceed that size to avoid unexpected behavior."
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "search_notes"
+          ],
+          "answer": "The longest password your system will accept is 72 bytes. That limit comes from the bcrypt hashing algorithm you’re using. Bcrypt can only process the first 72 bytes of a password; anything longer is truncated, so the system rejects passwords that exceed that length to avoid unexpected behavior."
+        }
+      ]
+    },
+    {
+      "id": "rag-tolerance",
+      "passed": true,
+      "flaky": false,
+      "pass_count": 3,
+      "repeat": 3,
+      "tool_ok": true,
+      "answer_ok": true,
+      "mean_latency_ms": 7480.0,
+      "mean_llm_calls": 2.0,
+      "attempts": [
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "search_notes"
+          ],
+          "answer": "The evaluation baseline floors now use a tolerance of 15 percent. It used to be 10 percent, but that lower tolerance let one unlucky answer in the smallest group of eight cases fail the build."
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "search_notes"
+          ],
+          "answer": "The evaluation baseline floors now use a tolerance of 15 percent. It used to be 10 percent, but that lower tolerance let one unlucky answer in the smallest group of eight cases fail the build."
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "search_notes"
+          ],
+          "answer": "The evaluation baseline floors now use a tolerance of 15 percent. It used to be 10 percent, but that lower tolerance let one unlucky answer in the smallest group of eight cases fail the build."
+        }
+      ]
+    },
+    {
+      "id": "rag-not-in-notes",
+      "passed": true,
+      "flaky": false,
+      "pass_count": 3,
+      "repeat": 3,
+      "tool_ok": true,
+      "answer_ok": true,
+      "mean_latency_ms": 8685.333333333334,
+      "mean_llm_calls": 2.0,
+      "attempts": [
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "search_notes"
+          ],
+          "answer": "I couldn’t find that detail in your notes. If you remember any other clues or want to look it up together, just let me know!"
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "search_notes"
+          ],
+          "answer": "I couldn’t find that information in your notes. If you remember any details or want to look it up together, just let me know!"
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "search_notes"
+          ],
+          "answer": "I couldn’t find that information in your notes. If you remember any details or want me to look up the classic reference, just let me know!"
+        }
+      ]
+    },
+    {
+      "id": "calc-multiply",
+      "passed": true,
+      "flaky": false,
+      "pass_count": 3,
+      "repeat": 3,
+      "tool_ok": true,
+      "answer_ok": true,
+      "mean_latency_ms": 8997.333333333334,
+      "mean_llm_calls": 2.0,
+      "attempts": [
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "calculator"
+          ],
+          "answer": "17 times 23 equals 391."
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "calculator"
+          ],
+          "answer": "17 times 23 equals 391."
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "calculator"
+          ],
+          "answer": "17 times 23 equals 391."
+        }
+      ]
+    },
+    {
+      "id": "calc-expression",
+      "passed": true,
+      "flaky": false,
+      "pass_count": 3,
+      "repeat": 3,
+      "tool_ok": true,
+      "answer_ok": true,
+      "mean_latency_ms": 6809.333333333333,
+      "mean_llm_calls": 2.0,
+      "attempts": [
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "calculator"
+          ],
+          "answer": "The calculation comes out to 265."
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "calculator"
+          ],
+          "answer": "The result is 265."
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "calculator"
+          ],
+          "answer": "The calculation comes out to 265."
+        }
+      ]
+    },
+    {
+      "id": "time-now",
+      "passed": true,
+      "flaky": false,
+      "pass_count": 3,
+      "repeat": 3,
+      "tool_ok": true,
+      "answer_ok": true,
+      "mean_latency_ms": 8146.0,
+      "mean_llm_calls": 2.0,
+      "attempts": [
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "current_time"
+          ],
+          "answer": "The current time in UTC is Wednesday, 21 October 2026, 08:31."
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "current_time"
+          ],
+          "answer": "The current time in UTC is Wednesday, 21 October 2026, 08:31."
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [
+            "current_time"
+          ],
+          "answer": "The current time in UTC is Wednesday, 21 October 2026, 08:31."
+        }
+      ]
+    },
+    {
+      "id": "no-tool-capital",
+      "passed": true,
+      "flaky": false,
+      "pass_count": 3,
+      "repeat": 3,
+      "tool_ok": true,
+      "answer_ok": true,
+      "mean_latency_ms": 3749.0,
+      "mean_llm_calls": 1.0,
+      "attempts": [
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [],
+          "answer": "The capital of Japan is Tokyo."
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [],
+          "answer": "The capital of Japan is Tokyo."
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [],
+          "answer": "The capital of Japan is Tokyo."
+        }
+      ]
+    },
+    {
+      "id": "no-tool-chat",
+      "passed": true,
+      "flaky": false,
+      "pass_count": 3,
+      "repeat": 3,
+      "tool_ok": true,
+      "answer_ok": true,
+      "mean_latency_ms": 4022.6666666666665,
+      "mean_llm_calls": 1.0,
+      "attempts": [
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [],
+          "answer": "Hello! I’m here to help you with whatever you need."
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [],
+          "answer": "Hello! I’m here to help you with whatever you need."
+        },
+        {
+          "tool_ok": true,
+          "answer_ok": true,
+          "passed": true,
+          "failures": [],
+          "tools": [],
+          "answer": "Hello! I’m here to help you with whatever you need."
+        }
+      ]
+    },
+    {
+      "id": "multi-limit-times-3",
+      "passed": false,
+      "flaky": false,
+      "pass_count": 0,
+      "repeat": 3,
+      "tool_ok": false,
+      "answer_ok": true,
+      "mean_latency_ms": 9031.666666666666,
+      "mean_llm_calls": 2.0,
+      "attempts": [
+        {
+          "tool_ok": false,
+          "answer_ok": true,
+          "passed": false,
+          "failures": [
+            "tools: expected ['calculator', 'search_notes'], used ['search_notes']"
+          ],
+          "tools": [
+            "search_notes"
+          ],
+          "answer": "The upload size limit in your notes is 10 megabytes. Multiplying that by three gives 30 megabytes."
+        },
+        {
+          "tool_ok": false,
+          "answer_ok": true,
+          "passed": false,
+          "failures": [
+            "tools: expected ['calculator', 'search_notes'], used ['search_notes']"
+          ],
+          "tools": [
+            "search_notes"
+          ],
+          "answer": "The note says uploads larger than 10 MB are rejected, so 10 MB times 3 equals 30 MB."
+        },
+        {
+          "tool_ok": false,
+          "answer_ok": true,
+          "passed": false,
+          "failures": [
+            "tools: expected ['calculator', 'search_notes'], used ['search_notes']"
+          ],
+          "tools": [
+            "search_notes"
+          ],
+          "answer": "The note says uploads larger than 10 MB are rejected, so 10 MB times 3 equals 30 MB."
+        }
+      ]
+    }
+  ]
+}

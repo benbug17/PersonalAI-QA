@@ -172,3 +172,90 @@ def test_default_graph_is_built_once_and_indexes_the_notes(monkeypatch, tmp_path
     assert agent.get_default_graph() is first
     assert run_agent(first, "hello").answer == "ok"
     assert (tmp_path / "chroma").exists()
+
+
+def test_default_graph_uses_the_embedder_named_in_the_environment(monkeypatch, tmp_path):
+    import rag
+    seen = []
+    monkeypatch.setattr(agent, "_default_graph", None)
+    monkeypatch.setattr(agent, "make_groq_llm", lambda: ScriptedChatModel(responses=[final("hi")]))
+    monkeypatch.setattr(rag, "get_embedder", lambda name: seen.append(name) or HashingEmbedder())
+    monkeypatch.setenv("NOTES_DB", str(tmp_path / "db"))
+    monkeypatch.setenv("NOTES_EMBEDDER", "onnx")
+    agent.get_default_graph()
+    assert seen == ["onnx"]
+    monkeypatch.setattr(agent, "_default_graph", None)
+
+
+# ---- malformed tool calls rejected by the provider --------------------------------------------------------
+class ProviderError(Exception):
+    def __init__(self, message, status_code):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+GLITCH = ProviderError("Error code: 400 - tool_use_failed: calculator<|channel|>commentary was not in request.tools", 400)
+
+
+class FakeGraph:
+    """Stands in for a compiled graph: each invoke() returns or raises the next scripted outcome."""
+    def __init__(self, *outcomes):
+        self.outcomes, self.calls = list(outcomes), 0
+
+    def invoke(self, payload, config=None):
+        self.calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def answered(text):
+    from langchain_core.messages import AIMessage
+    return {"messages": [AIMessage(content=text)]}
+
+
+@pytest.mark.parametrize("exc,expected", [
+    (ProviderError("tool_use_failed", 400), True),
+    (ProviderError("some other bad request", 400), False),
+    (ProviderError("tool_use_failed", 429), False),
+    (RuntimeError("tool_use_failed"), False),
+])
+def test_only_the_tool_call_glitch_is_recognised(exc, expected):
+    assert agent.is_tool_call_glitch(exc) is expected
+
+
+def test_a_rejected_tool_call_is_retried_and_the_retry_can_succeed():
+    graph = FakeGraph(GLITCH, answered("It is 30."))
+    result = run_agent(graph, "q")
+    assert result.answer == "It is 30." and result.error is None and graph.calls == 2
+
+
+def test_a_tool_call_that_keeps_being_rejected_becomes_an_error_result_not_an_exception():
+    graph = FakeGraph(GLITCH, GLITCH, GLITCH)
+    result = run_agent(graph, "q")                     # default: 2 retries = 3 attempts
+    assert graph.calls == 3 and not result.truncated
+    assert result.error.startswith("malformed tool call rejected by the provider after 3 attempt(s)")
+    assert "could not finish" in result.answer and result.tool_calls == []
+
+
+def test_the_retry_count_is_configurable_and_zero_means_one_attempt():
+    graph = FakeGraph(GLITCH)
+    assert "after 1 attempt(s)" in run_agent(graph, "q", retries=0).error and graph.calls == 1
+
+
+def test_the_error_message_is_kept_short():
+    long_glitch = ProviderError("tool_use_failed " + "x" * 5000, 400)
+    assert len(run_agent(FakeGraph(long_glitch), "q", retries=0).error) < 300
+
+
+@pytest.mark.parametrize("exc", [
+    ProviderError("tokens per day", 429),
+    ProviderError("some other bad request", 400),
+    RuntimeError("connection reset"),
+])
+def test_every_other_provider_error_still_raises_and_is_not_retried(exc):
+    graph = FakeGraph(exc, answered("never reached"))
+    with pytest.raises(type(exc)):
+        run_agent(graph, "q")
+    assert graph.calls == 1

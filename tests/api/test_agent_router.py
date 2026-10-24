@@ -96,3 +96,12 @@ def test_metrics_reports_pipeline_steps_after_traffic(client, auth, stub_llm):
     body = client.get("/metrics", headers=auth).json()
     assert set(body) == {"steps", "tokens", "estimated_cost_usd"}
     assert body["steps"]["llm"]["count"] == 1
+
+
+def test_an_agent_result_carrying_an_error_is_502_and_is_logged(client, auth, monkeypatch, caplog):
+    serve_graph(monkeypatch, final("unused"))
+    monkeypatch.setattr(agent, "run_agent", lambda graph, question, **kw: agent.AgentResult(answer="Sorry", error="malformed tool call"))
+    with caplog.at_level("ERROR", logger="personalai"):
+        r = client.post("/agent", json={"query": "hi"}, headers=auth)
+    assert r.status_code == 502 and r.json()["detail"] == "Agent call failed"
+    assert "malformed tool call" in caplog.text

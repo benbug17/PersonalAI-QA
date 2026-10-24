@@ -183,9 +183,11 @@ def test_rate_limit_mid_run_is_a_clean_exit_2_not_a_traceback(monkeypatch, tmp_p
     assert run(tmp_path) == 2
     err = capsys.readouterr().err
     assert "rate limit" in err and "--repeat 1" in err
-    assert "1 case(s) finished before the stop. Nothing was saved." in err
+    assert "1 case(s) finished before the stop. Partial results saved" in err
     assert "Traceback" not in err
-    assert not (tmp_path / "out.json").exists()
+    saved = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
+    assert saved["partial"] is True and "tokens per day" in saved["stopped"]
+    assert [r["id"] for r in saved["rows"]] == ["calc"]   # the finished case is kept, not thrown away
 
 
 def test_any_other_provider_error_is_reported_without_the_rate_limit_advice(monkeypatch, tmp_path, capsys):
@@ -209,3 +211,67 @@ def test_a_finished_run_reports_how_many_tokens_it_used(monkeypatch, tmp_path, c
     assert run(tmp_path) == 0
     out = capsys.readouterr().out
     assert "LLM calls: 3, tokens used: 20 prompt + 10 completion" in out
+
+
+# ---- embedder choice and setup failures -------------------------------------------------------------
+def test_the_chosen_embedder_name_is_passed_through(monkeypatch, tmp_path):
+    from rag import HashingEmbedder
+    use_script(monkeypatch, final("Hello!"), tool_call("calculator", {"expression": "17 * 23"}), final("It is 391."))
+    seen = []
+    monkeypatch.setattr(agent_run, "get_embedder", lambda name: seen.append(name) or HashingEmbedder())
+    assert agent_run.main(["--embedder", "onnx", "--out", str(tmp_path / "out.json")]) == 0
+    assert seen == ["onnx"]
+
+
+def test_an_embedding_model_that_fails_to_download_is_a_setup_problem(monkeypatch, tmp_path, capsys):
+    use_script(monkeypatch, final("Hello!"))
+
+    def cannot_download(name):
+        raise OSError("download failed")
+    monkeypatch.setattr(agent_run, "get_embedder", cannot_download)
+    assert agent_run.main(["--embedder", "onnx", "--out", str(tmp_path / "out.json")]) == 2
+    assert "Setup problem: download failed" in capsys.readouterr().err
+
+
+def test_a_failure_while_indexing_the_notes_is_a_setup_problem(monkeypatch, tmp_path, capsys):
+    use_script(monkeypatch, final("Hello!"))
+
+    def cannot_index(store, directory):
+        raise RuntimeError("model download interrupted")
+    monkeypatch.setattr(agent_run, "ingest_directory", cannot_index)
+    assert run(tmp_path) == 2
+    assert "Setup problem: model download interrupted" in capsys.readouterr().err
+
+
+# ---- a malformed tool call must not kill the run --------------------------------------------------------
+def test_a_case_whose_tool_call_keeps_being_rejected_fails_but_the_run_continues(monkeypatch, tmp_path, capsys):
+    use_script(monkeypatch, final("unused"), cases=TWO_CASES)
+    broken = agent.AgentResult(answer="Sorry", error="malformed tool call rejected by the provider after 3 attempt(s)")
+    script_run_agent(monkeypatch, good_result(), broken, good_result())
+    assert run(tmp_path) == 1                      # finished normally; one case failed
+    out = capsys.readouterr().out
+    assert "FAIL  calc" in out and "PASS  calc2" in out
+    assert "agent error: malformed tool call rejected" in out and "gave up" not in out
+
+
+def test_score_case_reports_a_provider_rejected_call_as_an_error_not_a_step_limit():
+    result = agent.AgentResult(answer="Sorry", error="malformed tool call")
+    s = agent_run.score_case(ONE_CASE[0], result)
+    assert not s["passed"] and not s["answer_ok"]
+    assert s["failures"][0] == "tools: expected ['calculator'], used []"
+    assert "agent error: malformed tool call" in s["failures"]
+    assert not any("gave up" in f for f in s["failures"])
+
+
+def test_an_errored_result_is_never_counted_correct_even_if_its_text_looks_right():
+    result = agent.AgentResult(answer="It is 391.", tool_calls=[{"name": "calculator", "args": {}}],
+                               error="malformed tool call")
+    s = agent_run.score_case(ONE_CASE[0], result)
+    assert s["tool_ok"] is True and not s["answer_ok"] and not s["passed"]
+    assert s["failures"] == ["agent error: malformed tool call"]
+
+
+def test_an_error_is_reported_as_an_error_even_if_the_result_is_also_marked_truncated():
+    result = agent.AgentResult(answer="It is 391.", tool_calls=[{"name": "calculator", "args": {}}],
+                               truncated=True, error="malformed tool call")
+    assert agent_run.score_case(ONE_CASE[0], result)["failures"] == ["agent error: malformed tool call"]

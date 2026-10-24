@@ -232,3 +232,24 @@ def test_no_token_line_when_the_api_reports_no_usage(monkeypatch, tmp_path, caps
     stub_llm(monkeypatch)
     run(tmp_path)
     assert "tokens used" not in capsys.readouterr().out
+
+
+# ---- a judge that gives nothing usable is a clean exit 2, not a traceback ---------------------------------
+def test_a_judge_model_that_returns_nothing_is_a_clean_exit_2(monkeypatch, tmp_path, capsys):
+    stub_llm(monkeypatch)
+    monkeypatch.setenv("JUDGE_MODEL", "some-judge")
+    monkeypatch.setattr(llm_judge, "groq_call_llm", lambda: (lambda system, user: ""))   # wrong id / quota: empty replies
+    assert run(tmp_path, "--judge") == 2
+    err = capsys.readouterr().err
+    assert "no usable answer" in err and "JUDGE_MODEL='some-judge'" in err and "Traceback" not in err
+    assert not (tmp_path / "out.json").exists()
+
+
+def test_a_judge_that_fails_part_way_stops_cleanly_and_saves_nothing(monkeypatch, tmp_path, capsys):
+    stub_llm(monkeypatch)
+    monkeypatch.setattr(llm_judge, "calibrate", lambda backend: {"agreement": 1.0, "pairs": 6, "misses": []})
+    monkeypatch.setattr(llm_judge, "groq_call_llm", lambda: (lambda system, user: ""))   # calibration skipped; scoring fails
+    assert run(tmp_path, "--judge") == 2
+    err = capsys.readouterr().err
+    assert "the judge could not score a case" in err and "not a model failure" in err
+    assert not (tmp_path / "out.json").exists()
