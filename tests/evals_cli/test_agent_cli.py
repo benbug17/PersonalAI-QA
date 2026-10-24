@@ -119,7 +119,7 @@ def test_bench_can_include_the_agent(monkeypatch, capsys):
 def test_bench_asks_at_temperature_zero(monkeypatch):
     temps = []
     monkeypatch.setattr(groq_client, "get_learning_assistant_response", lambda q, temperature=0.7: temps.append(temperature) or "a")
-    assert bench.main(["--n", "2"]) == 0
+    assert bench.main(["--n", "2", "--warmup", "0"]) == 0
     assert temps == [0.0, 0.0]
 
 
@@ -275,3 +275,59 @@ def test_an_error_is_reported_as_an_error_even_if_the_result_is_also_marked_trun
     result = agent.AgentResult(answer="It is 391.", tool_calls=[{"name": "calculator", "args": {}}],
                                truncated=True, error="malformed tool call")
     assert agent_run.score_case(ONE_CASE[0], result)["failures"] == ["agent error: malformed tool call"]
+
+
+# ---- warm-up calls are made but never counted ------------------------------------------------------------
+def test_warmup_calls_are_made_but_not_counted(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(groq_client, "get_learning_assistant_response", lambda q, temperature=0.7: calls.append(q) or "a")
+    assert bench.main(["--n", "3", "--warmup", "2"]) == 0
+    out = capsys.readouterr().out
+    assert len(calls) == 5 and "| llm_text | 3 |" in out        # 2 warm-up + 3 measured, only 3 reported
+
+
+def test_the_benchmark_output_says_what_was_measured(monkeypatch, capsys):
+    monkeypatch.setattr(groq_client, "get_learning_assistant_response", lambda q, temperature=0.7: "a")
+    monkeypatch.setenv("GROQ_MODEL", "some-model")
+    assert bench.main(["--n", "2", "--warmup", "1"]) == 0
+    first_line = capsys.readouterr().out.splitlines()[0]
+    assert first_line.startswith("Benchmark: model=some-model n=2 warmup=1 date=20")
+
+
+def test_agent_warmups_are_not_counted_either(monkeypatch, capsys):
+    import uuid
+
+    from rag import HashingEmbedder, NoteStore
+    monkeypatch.setattr(groq_client, "get_learning_assistant_response", lambda q, temperature=0.7: "answer")
+    model = ScriptedChatModel(responses=[final("ok")])
+    graph = agent.build_agent(model, NoteStore(HashingEmbedder(), collection=f"bench-{uuid.uuid4().hex}"))
+    monkeypatch.setattr(agent, "get_default_graph", lambda: graph)
+    assert bench.main(["--n", "2", "--warmup", "3", "--agent"]) == 0
+    out = capsys.readouterr().out
+    assert model.index == 3 + 2                                  # the agent really ran 3 warm-ups and 2 measured calls
+    assert "| agent_total | 2 |" in out and "| llm_text | 2 |" in out   # ...but only the 2 measured ones are reported
+
+
+def test_the_agent_is_benchmarked_on_questions_that_really_use_its_tools(monkeypatch):
+    asked = []
+
+    def fake_run_agent(graph, question, **kwargs):
+        asked.append(question)
+        return agent.AgentResult(answer="ok")
+    monkeypatch.setattr(groq_client, "get_learning_assistant_response", lambda q, temperature=0.7: "a")
+    monkeypatch.setattr(agent, "get_default_graph", lambda: object())
+    monkeypatch.setattr(agent, "run_agent", fake_run_agent)
+    assert bench.main(["--n", "6", "--warmup", "0", "--agent"]) == 0
+    assert asked == bench.AGENT_QUESTIONS
+    text = " ".join(asked).lower()
+    assert "my notes" in text and "times" in text and "compute" in text    # notes lookups AND arithmetic are both exercised
+    assert any("notes" in q and "multiply" in q for q in asked)             # including a two-tool question
+
+
+def test_agent_warmups_use_the_same_question_set_as_the_measured_calls(monkeypatch):
+    asked = []
+    monkeypatch.setattr(groq_client, "get_learning_assistant_response", lambda q, temperature=0.7: "a")
+    monkeypatch.setattr(agent, "get_default_graph", lambda: object())
+    monkeypatch.setattr(agent, "run_agent", lambda graph, question, **kw: asked.append(question) or agent.AgentResult(answer="ok"))
+    assert bench.main(["--n", "2", "--warmup", "2", "--agent"]) == 0
+    assert asked == bench.AGENT_QUESTIONS[:2] + bench.AGENT_QUESTIONS[:2]       # 2 warm-ups, then 2 measured
