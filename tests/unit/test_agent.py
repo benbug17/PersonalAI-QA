@@ -259,3 +259,136 @@ def test_every_other_provider_error_still_raises_and_is_not_retried(exc):
     with pytest.raises(type(exc)):
         run_agent(graph, "q")
     assert graph.calls == 1
+
+
+# ---- repairing a tool call the provider rejected only because its NAME was malformed -----------------------
+class FlakyChatModel(ScriptedChatModel):
+    """Raises the exceptions in `failures` (one per call) before it starts replaying its scripted replies."""
+    failures: list = []
+    calls: int = 0
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self.calls += 1
+        if self.failures:
+            raise self.failures.pop(0)
+        return super()._generate(messages, stop, run_manager, **kwargs)
+
+
+def rejected(generation="default", nested=True, include_generation=True):
+    """The REAL groq SDK exception for a 400 tool_use_failed, built the way the SDK builds it."""
+    import json
+
+    import groq
+    import httpx
+    if generation == "default":
+        generation = json.dumps({"name": "calculator<|channel|>commentary", "arguments": {"expression": "10 * 3"}})
+    inner = {"message": "Tool call validation failed: attempted to call tool 'calculator<|channel|>commentary' which was "
+                        "not in request.tools", "type": "invalid_request_error", "code": "tool_use_failed"}
+    if include_generation:
+        inner["failed_generation"] = generation
+    body = {"error": inner} if nested else inner
+    response = httpx.Response(400, request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions"), json=body)
+    return groq.BadRequestError(f"Error code: 400 - {body}", response=response, body=body)
+
+
+TOOLS = {"calculator", "search_notes", "current_time"}
+
+
+def test_the_intended_call_is_rebuilt_from_the_real_sdk_error():
+    message = agent.recover_tool_call(rejected(), TOOLS)
+    call = message.tool_calls[0]
+    assert message.content == "" and call["name"] == "calculator" and call["args"] == {"expression": "10 * 3"}
+    assert call["id"].startswith("recovered-") and call["type"] == "tool_call"
+
+
+def test_both_sdk_body_shapes_are_understood():
+    assert agent.recover_tool_call(rejected(nested=True), TOOLS).tool_calls[0]["name"] == "calculator"
+    assert agent.recover_tool_call(rejected(nested=False), TOOLS).tool_calls[0]["name"] == "calculator"
+
+
+def test_arguments_may_arrive_as_a_json_string():
+    import json
+    generation = json.dumps({"name": "calculator<|channel|>commentary", "arguments": json.dumps({"expression": "2+2"})})
+    assert agent.recover_tool_call(rejected(generation), TOOLS).tool_calls[0]["args"] == {"expression": "2+2"}
+
+
+@pytest.mark.parametrize("dirty,clean", [
+    ("calculator<|channel|>commentary", "calculator"),
+    ("search_notes<|channel|>commentary json", "search_notes"),
+    ("current_time<|channel|>analysis", "current_time"),
+    ("calculator", "calculator"),
+])
+def test_the_stray_formatting_token_is_stripped_from_the_name(dirty, clean):
+    import json
+    generation = json.dumps({"name": dirty, "arguments": {}})
+    assert agent.recover_tool_call(rejected(generation), TOOLS).tool_calls[0]["name"] == clean
+
+
+@pytest.mark.parametrize("generation", [
+    "", "not json at all", "[1, 2]", '{"name": "launch_missiles<|channel|>x", "arguments": {}}',
+    '{"name": "calculator", "arguments": "{oops"}', '{"name": "calculator", "arguments": [1]}',
+])
+def test_a_call_that_cannot_be_repaired_safely_returns_none(generation):
+    assert agent.recover_tool_call(rejected(generation), TOOLS) is None
+
+
+def test_errors_without_a_usable_body_return_none():
+    assert agent.recover_tool_call(ProviderError("tool_use_failed", 400), TOOLS) is None          # no body at all
+    assert agent.recover_tool_call(rejected(include_generation=False), TOOLS) is None            # no failed_generation
+    odd = ProviderError("tool_use_failed", 400)
+    odd.body = "plain text"
+    assert agent.recover_tool_call(odd, TOOLS) is None
+    odd.body = {"error": {"failed_generation": {"not": "a string"}}}
+    assert agent.recover_tool_call(odd, TOOLS) is None
+
+
+# ---- end to end: the agent carries on instead of restarting -------------------------------------------------
+def test_a_malformed_tool_call_is_repaired_in_place_and_the_agent_carries_on(store):
+    model = FlakyChatModel(responses=[final("It is 30.")], failures=[rejected()])
+    result = run_agent(build_agent(model, store), "What is 3 times 10?")
+    assert result.answer == "It is 30." and result.error is None
+    assert result.tools_used == ["calculator"]            # the repaired call really ran (a restart would show no tool)
+    assert model.calls == 2                               # one rejected call, then the answer: no restart, no extra search
+    assert tracker.summary()["steps"]["tool_call_recovered"]["count"] == 1
+
+
+def test_a_glitch_that_cannot_be_repaired_still_falls_back_to_retrying_the_whole_question(store):
+    model = FlakyChatModel(responses=[final("Fine.")], failures=[GLITCH])
+    result = run_agent(build_agent(model, store), "q")
+    assert result.answer == "Fine." and model.calls == 2 and result.tools_used == []
+    assert "tool_call_recovered" not in tracker.summary()["steps"]
+
+
+def test_a_repair_that_names_an_unknown_tool_is_not_executed(store):
+    bad = rejected('{"name": "launch_missiles<|channel|>commentary", "arguments": {}}')
+    model = FlakyChatModel(responses=[final("Fine.")], failures=[bad])
+    result = run_agent(build_agent(model, store), "q")
+    assert result.tools_used == [] and "tool_call_recovered" not in tracker.summary()["steps"]
+
+
+def test_other_errors_inside_the_model_call_still_propagate_untouched(store):
+    model = FlakyChatModel(responses=[final("never")], failures=[ProviderError("tokens per day", 429)])
+    with pytest.raises(ProviderError):
+        run_agent(build_agent(model, store), "q")
+    assert model.calls == 1
+
+
+def test_only_a_400_tool_use_failed_is_ever_repaired_even_if_the_body_looks_repairable(store):
+    server_error = rejected()
+    server_error.status_code = 500                         # looks repairable, but it is not the glitch we handle
+    model = FlakyChatModel(responses=[final("never")], failures=[server_error])
+    with pytest.raises(type(server_error)):
+        run_agent(build_agent(model, store), "q")
+    assert model.calls == 1 and "tool_call_recovered" not in tracker.summary()["steps"]
+
+
+def test_two_repairs_in_one_question_both_run_because_each_gets_its_own_id(store):
+    model = FlakyChatModel(responses=[final("done")], failures=[rejected(), rejected()])
+    result = run_agent(build_agent(model, store), "q")
+    assert result.tools_used == ["calculator", "calculator"] and result.answer == "done"
+    assert tracker.summary()["steps"]["tool_call_recovered"]["count"] == 2
+
+
+def test_every_repaired_call_gets_a_distinct_id():
+    ids = {agent.recover_tool_call(rejected(), TOOLS).tool_calls[0]["id"] for _ in range(20)}
+    assert len(ids) == 20      # providers expect tool-call ids to be unique within a conversation

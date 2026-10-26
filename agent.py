@@ -13,9 +13,11 @@ run_agent() returns the answer plus the tool-call trace, so evals can check
 from __future__ import annotations
 
 import ast
+import json
 import operator
 import os
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -119,15 +121,61 @@ def build_tools(store):
     return [calculator, search_notes, current_time]
 
 
+# ------------------------------------------------------- repairing malformed tool calls
+def _failed_generation(exc: Exception) -> str | None:
+    """The text the model actually generated, as reported in the provider's 400 error (if present)."""
+    body = getattr(exc, "body", None)
+    if not isinstance(body, dict):
+        return None
+    inner = body.get("error") if isinstance(body.get("error"), dict) else body   # SDK versions differ in the nesting
+    value = inner.get("failed_generation")
+    return value if isinstance(value, str) else None
+
+
+def recover_tool_call(exc: Exception, tool_names) -> AIMessage | None:
+    """Rebuild the call the model MEANT to make when the provider rejected it only because the tool name was
+    malformed (for example 'calculator<|channel|>commentary'). Returns None when it cannot be repaired safely."""
+    raw = _failed_generation(exc)
+    if not raw:
+        return None
+    try:
+        call = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(call, dict):
+        return None
+    name = str(call.get("name", "")).split("<|", 1)[0].strip()
+    args = call.get("arguments", {})
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            return None
+    if name not in tool_names or not isinstance(args, dict):
+        return None
+    return AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": f"recovered-{uuid.uuid4().hex[:12]}",
+                                              "type": "tool_call"}])
+
+
 # --------------------------------------------------------------------- graph
 def build_agent(llm, store, system_prompt: str = AGENT_SYSTEM_PROMPT):
     """Compile the agent graph. `llm` is any LangChain chat model that supports bind_tools."""
     tools = build_tools(store)
     model = llm.bind_tools(tools)
 
+    tool_names = {t.name for t in tools}
+
     def call_model(state: MessagesState):
         with timed("agent_llm"):
-            reply = model.invoke([SystemMessage(content=system_prompt)] + state["messages"])
+            try:
+                reply = model.invoke([SystemMessage(content=system_prompt)] + state["messages"])
+            except Exception as exc:  # noqa: BLE001 - only a repairable malformed tool call is handled here
+                if not is_tool_call_glitch(exc):
+                    raise
+                reply = recover_tool_call(exc, tool_names)
+                if reply is None:
+                    raise
+                tracker.record("tool_call_recovered", 0.0)   # shows up in the benchmark table as a count
         usage = getattr(reply, "usage_metadata", None) or {}
         tracker.record_tokens(usage.get("input_tokens"), usage.get("output_tokens"))
         return {"messages": [reply]}
