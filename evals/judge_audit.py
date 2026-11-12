@@ -2,11 +2,15 @@
 
     JUDGE_MODEL=... python -m evals.judge_audit calibrate [--runs 1]
     JUDGE_MODEL=... python -m evals.judge_audit audit evals/recorded/heldout_run3_judge.json [--runs 1] [--confirm-runs 3]
+    python -m evals.judge_audit compare AUDIT_A.json AUDIT_B.json          (no API key needed)
 
 calibrate  scores the judge on easy pairs, hard pairs and real labelled answers, reported per group.
 audit      has the judge score EVERY saved answer from a held-out run (not only the ones the checks passed),
            then lists every place the judge and the keyword checks disagree, so a human can decide who is right.
-Neither command changes your evaluation results. Exit codes: 0 done, 2 setup problem.
+compare    puts two saved audits side by side (run `audit` once per judge model, with --out): how often the two
+           judges agree with each other and with the keyword checks, and exactly where they differ. Use it to
+           check a judge against one from a different model family.
+None of these commands changes your evaluation results. Exit codes: 0 done, 2 setup problem.
 """
 import argparse
 import json
@@ -69,6 +73,55 @@ def audit(results: list, cases_by_id: dict, backend, runs: int = 1, confirm_runs
             row["kind"] = classify(row)
             rows.append(row)
     return {"rows": rows, "skipped": dict(skipped), "summary": dict(Counter(r["kind"] for r in rows))}
+
+
+def compare(a: dict, b: dict) -> dict:
+    """Align two saved audits on (case id, answer text) and compare the two judges with each other and the checks."""
+    by_key = {(r["id"], r["response"]): r for r in b["rows"]}
+    rows = []
+    for ra in a["rows"]:
+        rb = by_key.get((ra["id"], ra["response"]))
+        if rb is None:
+            continue
+        rows.append({"id": ra["id"], "response": ra["response"], "mechanical_passed": ra["mechanical_passed"],
+                     "a_passed": ra["judge_passed"], "b_passed": rb["judge_passed"],
+                     "a_score": ra.get("score"), "b_score": rb.get("score"),
+                     "a_reason": ra.get("reason", ""), "b_reason": rb.get("reason", "")})
+    both = [r for r in rows if r["a_passed"] is not None and r["b_passed"] is not None]
+    return {
+        "judge_a": a.get("judge_model"), "judge_b": b.get("judge_model"),
+        "common": len(rows), "both_scored": len(both),
+        "judges_agree": sum(r["a_passed"] == r["b_passed"] for r in both),
+        "a_agrees_with_checks": sum(r["a_passed"] == r["mechanical_passed"] for r in both),
+        "b_agrees_with_checks": sum(r["b_passed"] == r["mechanical_passed"] for r in both),
+        "rows": rows,
+    }
+
+
+def print_compare(report: dict) -> None:
+    n = report["both_scored"]
+    pct = lambda k: f"{report[k]}/{n} ({report[k] / n:.0%})" if n else "n/a (nothing scored by both)"  # noqa: E731
+    print(f"Judge comparison: A = {report['judge_a']!r}, B = {report['judge_b']!r}")
+    print(f"  answers in both audits: {report['common']}; scored by both: {n}")
+    print(f"  A and B agree with each other:      {pct('judges_agree')}")
+    print(f"  A agrees with the keyword checks:   {pct('a_agrees_with_checks')}")
+    print(f"  B agrees with the keyword checks:   {pct('b_agrees_with_checks')}")
+    verdict = lambda v: "no verdict" if v is None else ("PASS" if v else "FAIL")  # noqa: E731
+    failed = [r for r in report["rows"] if not r["mechanical_passed"]]
+    print(f"\nAnswers the keyword checks FAILED ({len(failed)}): what did each judge say?")
+    for r in failed:
+        print(f"  {r['id']}: A {verdict(r['a_passed'])}, B {verdict(r['b_passed'])}")
+    differ = [r for r in report["rows"] if r["a_passed"] is not None and r["b_passed"] is not None
+              and r["a_passed"] != r["b_passed"]]
+    print(f"\nWhere the two judges disagree ({len(differ)}):")
+    if not differ:
+        print("  none: the two judges gave the same verdict on every answer they both scored.")
+    for r in differ:
+        print(f"  {r['id']}  [checks: {'pass' if r['mechanical_passed'] else 'fail'}; A {verdict(r['a_passed'])} "
+              f"{r['a_score']}/5, B {verdict(r['b_passed'])} {r['b_score']}/5]")
+        print(f"      A: {r['a_reason']}")
+        print(f"      B: {r['b_reason']}")
+        print(f"      answer: {_short(r['response'])}")
 
 
 def _short(text: str, width: int = 260) -> str:
@@ -134,7 +187,27 @@ def main(argv=None) -> int:
     aud.add_argument("--runs", type=int, default=1)
     aud.add_argument("--confirm-runs", type=int, default=3, help="runs used to re-judge a disagreement")
     aud.add_argument("--out", default=DEFAULT_OUT)
+    aud.add_argument("--cases", default=HELDOUT_PATH, help="the cases file the results came from")
+    cmp_ = sub.add_parser("compare", help="compare two saved audits (two different judge models)")
+    cmp_.add_argument("audit_a")
+    cmp_.add_argument("audit_b")
     args = ap.parse_args(argv)
+
+    if args.command == "compare":                       # offline: needs no key and no judge model
+        try:
+            audits = []
+            for path in (args.audit_a, args.audit_b):
+                with open(path, encoding="utf-8") as f:
+                    audits.append(json.load(f))
+            report = compare(*audits)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            print(f"Cannot read two audit files: {exc}", file=sys.stderr)
+            return 2
+        if not report["common"]:
+            print("The two audits have no answers in common (were both made from the same results file?).", file=sys.stderr)
+            return 2
+        print_compare(report)
+        return 0
 
     load_dotenv()
     try:
@@ -154,7 +227,11 @@ def main(argv=None) -> int:
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(f"Cannot read a held-out results file from {args.results!r}: {exc}", file=sys.stderr)
         return 2
-    cases_by_id = {c["id"]: c for c in runner.load_cases(HELDOUT_PATH)}
+    try:
+        cases_by_id = {c["id"]: c for c in runner.load_cases(args.cases)}
+    except (OSError, ValueError) as exc:
+        print(f"Cannot read cases from {args.cases!r}: {exc}", file=sys.stderr)
+        return 2
     report = audit(results, cases_by_id, backend, runs=args.runs, confirm_runs=args.confirm_runs)
     print_audit(report)
     os.makedirs(os.path.dirname(args.out), exist_ok=True)

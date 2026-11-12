@@ -195,4 +195,5 @@ def audio(audio_hash: str, _: int = Depends(current_user)):
 
 
 # ---------------------------------------------------------------- agent + metrics (see agent_router.py)
-app.include_router(make_router(current_user))
+agent_routes = make_router(current_user)
+app.include_router(agent_routes)

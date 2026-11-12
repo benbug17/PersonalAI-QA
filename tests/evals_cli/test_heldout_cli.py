@@ -253,3 +253,69 @@ def test_a_judge_that_fails_part_way_stops_cleanly_and_saves_nothing(monkeypatch
     err = capsys.readouterr().err
     assert "the judge could not score a case" in err and "not a model failure" in err
     assert not (tmp_path / "out.json").exists()
+
+
+# ---- --cases: any cases file, each with its own freeze manifest -----------------------------------------------------
+def write_cases(path, ids=("c1", "c2")):
+    cases = [{"id": i, "category": "hallucination", "query": f"question {i}", "checks": [{"type": "non_empty"}],
+              "pass_examples": ["fine"], "fail_examples": [""]} for i in ids]
+    path.write_text(json.dumps(cases), encoding="utf-8")
+    return str(path)
+
+
+def test_the_default_cases_file_keeps_its_original_manifest(tmp_path):
+    assert heldout_run.manifest_path_for() == heldout_run.MANIFEST_PATH
+    assert heldout_run.manifest_path_for(heldout_run.HELDOUT_PATH) == heldout_run.MANIFEST_PATH
+    relative = __import__("os").path.relpath(heldout_run.HELDOUT_PATH)
+    assert heldout_run.manifest_path_for(relative) == heldout_run.MANIFEST_PATH       # same file, different spelling
+
+
+def test_any_other_cases_file_gets_its_own_manifest_beside_it(tmp_path):
+    path = str(tmp_path / "my_cases.json")
+    assert heldout_run.manifest_path_for(path) == str(tmp_path / "my_cases_manifest.json")
+
+
+def test_a_custom_cases_file_is_run_frozen_and_recorded_under_its_own_name(monkeypatch, tmp_path, capsys):
+    path = write_cases(tmp_path / "halluc.json")
+    stub_llm(monkeypatch, answers={"question c1": "fine", "question c2": "fine"})
+    assert run(tmp_path, "--cases", path, "--freeze") == 0
+    assert "overall=100%" in capsys.readouterr().out
+    assert (tmp_path / "halluc_manifest.json").exists()
+    assert not (tmp_path / "manifest.json").exists()                     # the default manifest was not touched
+    saved = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
+    assert saved["cases_file"] == "halluc.json" and saved["freeze_status"] == "frozen"
+    assert [r["id"] for r in saved["results"]] == ["c1", "c2"]
+
+
+def test_editing_a_custom_cases_file_after_freezing_is_flagged_by_name(monkeypatch, tmp_path, capsys):
+    path = write_cases(tmp_path / "halluc.json")
+    stub_llm(monkeypatch)
+    run(tmp_path, "--cases", path, "--freeze")
+    write_cases(tmp_path / "halluc.json", ids=("c1", "c2", "c3"))
+    capsys.readouterr()
+    run(tmp_path, "--cases", path)
+    assert "WARNING: halluc.json was edited after freezing" in capsys.readouterr().out
+
+
+def test_an_unfrozen_custom_file_gets_the_not_frozen_note(monkeypatch, tmp_path, capsys):
+    stub_llm(monkeypatch)
+    run(tmp_path, "--cases", write_cases(tmp_path / "halluc.json"))
+    assert "NOTE: cases are not frozen" in capsys.readouterr().out
+
+
+def test_the_custom_and_default_freezes_are_independent(monkeypatch, tmp_path):
+    path = write_cases(tmp_path / "halluc.json")
+    stub_llm(monkeypatch)
+    run(tmp_path, "--cases", path, "--freeze")
+    assert heldout_run.freeze_status(path) == "frozen"
+    assert heldout_run.freeze_status() == "not_frozen"                   # the default file was never frozen in this test
+
+
+@pytest.mark.parametrize("make", ["missing", "notjson"])
+def test_an_unreadable_cases_file_is_exit_2(monkeypatch, tmp_path, capsys, make):
+    stub_llm(monkeypatch)
+    path = tmp_path / "bad.json"
+    if make == "notjson":
+        path.write_text("{ not json", encoding="utf-8")
+    assert run(tmp_path, "--cases", str(path)) == 2
+    assert "Cannot read cases from" in capsys.readouterr().err

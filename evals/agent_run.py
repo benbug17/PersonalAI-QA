@@ -54,6 +54,11 @@ def score_case(case: dict, result) -> dict:
     return {"tool_ok": tool_ok, "answer_ok": answer_ok, "passed": not failures, "failures": failures}
 
 
+def repairs_so_far() -> int:
+    """How many malformed tool calls the agent has repaired in place so far in this process."""
+    return tracker.summary()["steps"].get("tool_call_recovered", {}).get("count", 0)
+
+
 def summarise(rows: list) -> dict:
     n = len(rows)
     return {
@@ -72,14 +77,17 @@ def evaluate(graph, cases, repeat: int = 1, on_row=None) -> list:
     for case in cases:
         scored, latencies, calls = [], [], []
         for _ in range(repeat):
+            repaired_before = repairs_so_far()
             result = run_agent(graph, case["query"])
-            scored.append(dict(score_case(case, result), tools=result.tools_used, answer=result.answer))
+            scored.append(dict(score_case(case, result), tools=result.tools_used, answer=result.answer,
+                               repairs=repairs_so_far() - repaired_before, restarts=result.retries_used))
             latencies.append(result.latency_ms)
             calls.append(result.llm_calls)
         passes = [s["passed"] for s in scored]
         rows.append({
             "id": case["id"], "passed": all(passes), "flaky": any(passes) and not all(passes),
             "pass_count": sum(passes), "repeat": repeat,
+            "repairs": sum(a["repairs"] for a in scored), "restarts": sum(a["restarts"] for a in scored),
             "tool_ok": all(s["tool_ok"] for s in scored), "answer_ok": all(s["answer_ok"] for s in scored),
             "mean_latency_ms": sum(latencies) / repeat, "mean_llm_calls": sum(calls) / repeat,
             "attempts": scored,
@@ -138,7 +146,9 @@ def main(argv=None) -> int:
 
     for row in rows:
         label = "PASS  " if row["passed"] else (f"FLAKY({row['pass_count']}/{row['repeat']}) " if row["pass_count"] else "FAIL  ")
-        print(f"{label}{row['id']}  ({row['mean_latency_ms']:.0f} ms, {row['mean_llm_calls']:.1f} LLM calls)")
+        notes = "".join([f", {row['repairs']} repaired" if row["repairs"] else "",
+                         f", {row['restarts']} restarted" if row["restarts"] else ""])
+        print(f"{label}{row['id']}  ({row['mean_latency_ms']:.0f} ms, {row['mean_llm_calls']:.1f} LLM calls{notes})")
         if not row["passed"]:
             for attempt in row["attempts"]:
                 for failure in attempt["failures"]:
@@ -146,6 +156,8 @@ def main(argv=None) -> int:
     s = summarise(rows)
     print(f"\ntool_selection={s['tool_selection']:.0%}  answer_correct={s['answer_correct']:.0%}  overall={s['overall']:.0%}  "
           f"mean_latency={s['mean_latency_ms']} ms  mean_llm_calls={s['mean_llm_calls']}")
+    print(f"Malformed tool calls repaired in place: {sum(r['repairs'] for r in rows)}; "
+          f"whole-question restarts: {sum(r['restarts'] for r in rows)}")
     t = tracker.summary()["tokens"]
     print(f"LLM calls: {t['llm_calls']}, tokens used: {t['prompt_tokens']} prompt + {t['completion_tokens']} completion")
     os.makedirs(os.path.dirname(args.out), exist_ok=True)

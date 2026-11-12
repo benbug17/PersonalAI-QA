@@ -197,6 +197,7 @@ class AgentResult:
     latency_ms: int = 0
     truncated: bool = False
     error: str | None = None  # set when the provider kept rejecting a malformed tool call
+    retries_used: int = 0     # whole-question restarts after a rejected tool call that could not be repaired in place
 
     @property
     def tools_used(self) -> list[str]:
@@ -230,6 +231,7 @@ def run_agent(graph, question: str, max_llm_calls: int = 5, retries: int = 2) ->
     config = {"recursion_limit": max_llm_calls * 2}
     messages: list = []
     error = None
+    attempt = 1
     with timed("agent_total"):
         for attempt in range(1, retries + 2):
             try:
@@ -262,6 +264,7 @@ def run_agent(graph, question: str, max_llm_calls: int = 5, retries: int = 2) ->
         latency_ms=round((time.perf_counter() - start) * 1000),
         truncated=truncated,
         error=error,
+        retries_used=attempt - 1,
     )
 
 

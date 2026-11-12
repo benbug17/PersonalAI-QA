@@ -291,7 +291,7 @@ def test_the_benchmark_output_says_what_was_measured(monkeypatch, capsys):
     monkeypatch.setenv("GROQ_MODEL", "some-model")
     assert bench.main(["--n", "2", "--warmup", "1"]) == 0
     first_line = capsys.readouterr().out.splitlines()[0]
-    assert first_line.startswith("Benchmark: model=some-model n=2 warmup=1 date=20")
+    assert first_line.startswith("Benchmark: model=some-model n=2 warmup=1 pause=0s date=20")
 
 
 def test_agent_warmups_are_not_counted_either(monkeypatch, capsys):
@@ -331,3 +331,127 @@ def test_agent_warmups_use_the_same_question_set_as_the_measured_calls(monkeypat
     monkeypatch.setattr(agent, "run_agent", lambda graph, question, **kw: asked.append(question) or agent.AgentResult(answer="ok"))
     assert bench.main(["--n", "2", "--warmup", "2", "--agent"]) == 0
     assert asked == bench.AGENT_QUESTIONS[:2] + bench.AGENT_QUESTIONS[:2]       # 2 warm-ups, then 2 measured
+
+
+# ---- repair and restart counts in the agent evaluation ---------------------------------------------------------
+def counting_run_agent(repaired_per_call, restarts_per_call):
+    """A run_agent stand-in that behaves like the real one: it bumps the process-wide repair counter."""
+    def fake(graph, question, **kwargs):
+        for _ in range(repaired_per_call):
+            tracker.record("tool_call_recovered", 0.0)
+        return agent.AgentResult(answer="It is 391.", tool_calls=[{"name": "calculator", "args": {}}],
+                                 llm_calls=2, latency_ms=5, retries_used=restarts_per_call)
+    return fake
+
+
+def test_evaluate_counts_repairs_and_restarts_per_attempt_and_per_case(monkeypatch):
+    tracker.reset()
+    monkeypatch.setattr(agent_run, "run_agent", counting_run_agent(repaired_per_call=1, restarts_per_call=2))
+    row = agent_run.evaluate(object(), ONE_CASE, repeat=3)[0]
+    assert row["repairs"] == 3 and row["restarts"] == 6
+    assert [a["repairs"] for a in row["attempts"]] == [1, 1, 1] and [a["restarts"] for a in row["attempts"]] == [2, 2, 2]
+
+
+def test_repairs_that_happened_before_the_case_are_not_attributed_to_it(monkeypatch):
+    tracker.reset()
+    tracker.record("tool_call_recovered", 0.0)                     # e.g. from the preflight call
+    monkeypatch.setattr(agent_run, "run_agent", counting_run_agent(0, 0))
+    assert agent_run.evaluate(object(), ONE_CASE)[0]["repairs"] == 0
+
+
+def test_the_run_reports_repairs_and_restarts_per_case_and_in_total(monkeypatch, tmp_path, capsys):
+    tracker.reset()
+    use_script(monkeypatch, final("unused"), cases=TWO_CASES)
+    script = iter([good_result()])                                  # preflight uses the scripted result...
+
+    def fake(graph, question, **kwargs):
+        try:
+            return next(script)
+        except StopIteration:
+            return counting_run_agent(1, 2)(graph, question)       # ...each real case: 1 repair, 2 restarts
+    monkeypatch.setattr(agent_run, "run_agent", fake)
+    assert run(tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "PASS  calc  (" in out and ", 1 repaired, 2 restarted)" in out
+    assert "Malformed tool calls repaired in place: 2; whole-question restarts: 4" in out
+
+
+def test_a_clean_run_says_zero_repairs_and_shows_no_per_case_note(monkeypatch, tmp_path, capsys):
+    tracker.reset()
+    use_script(monkeypatch, final("Hello!"), tool_call("calculator", {"expression": "17 * 23"}), final("It is 391."))
+    assert run(tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "Malformed tool calls repaired in place: 0; whole-question restarts: 0" in out
+    assert "repaired)" not in out and "restarted)" not in out
+
+
+def test_the_saved_results_carry_the_counts(monkeypatch, tmp_path):
+    tracker.reset()
+    use_script(monkeypatch, final("unused"))
+    script = iter([good_result()])
+    monkeypatch.setattr(agent_run, "run_agent", lambda g, q, **k: next(script, None) or counting_run_agent(2, 1)(g, q))
+    run(tmp_path)
+    saved = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
+    assert saved["rows"][0]["repairs"] == 2 and saved["rows"][0]["restarts"] == 1
+
+
+
+# ---- pacing: waits happen after every call and are never part of the timing -------------------------------------------------
+def fake_time(monkeypatch):
+    """A clock that only moves when the code sleeps or the fake model 'works'."""
+    import types
+
+    import timing
+
+    class Clock:
+        now = 0.0
+
+    clock = Clock()
+    fake = types.SimpleNamespace(perf_counter=lambda: clock.now, sleep=lambda seconds: setattr(clock, "now", clock.now + seconds))
+    monkeypatch.setattr(bench, "time", fake)
+    monkeypatch.setattr(timing, "time", fake)
+    return clock
+
+
+def test_a_pause_follows_every_benchmark_call_but_is_not_timed(monkeypatch):
+    clock = fake_time(monkeypatch)
+    tracker.reset()
+
+    def generate(question):
+        clock.now += 0.010                                   # each call "takes" 10 ms
+        return "answer"
+    assert bench.run_benchmark(generate, 3, pause=5.0) == 3
+    step = tracker.summary()["steps"]["llm_text"]
+    assert step["count"] == 3 and step["mean_ms"] == pytest.approx(10.0) and clock.now == pytest.approx(3 * 5.0 + 0.030)
+
+
+def test_no_pause_means_no_waiting(monkeypatch):
+    clock = fake_time(monkeypatch)
+    bench.run_benchmark(lambda q: "answer", 3)
+    assert clock.now == 0.0
+
+
+def test_main_pauses_after_every_warmup_and_measured_call_text_and_agent(monkeypatch, capsys):
+    import types
+    slept = []
+    monkeypatch.setattr(bench, "time", types.SimpleNamespace(sleep=slept.append))
+    monkeypatch.setattr(groq_client, "get_learning_assistant_response", lambda q, temperature=0.7: "answer")
+    monkeypatch.setattr(agent, "get_default_graph", lambda: object())
+    monkeypatch.setattr(agent, "run_agent", lambda graph, question, **kw: agent.AgentResult(answer="ok"))
+    assert bench.main(["--n", "2", "--warmup", "1", "--agent", "--pause", "3"]) == 0
+    assert slept == [3.0] * (2 * 1 + 2 * 2)                  # warm-up: text + agent; measured: n text + n agent
+    assert "pause=3s" in capsys.readouterr().out
+
+
+def test_main_without_a_pause_never_sleeps(monkeypatch):
+    import types
+    slept = []
+    monkeypatch.setattr(bench, "time", types.SimpleNamespace(sleep=slept.append))
+    monkeypatch.setattr(groq_client, "get_learning_assistant_response", lambda q, temperature=0.7: "answer")
+    assert bench.main(["--n", "2", "--warmup", "1"]) == 0
+    assert slept == []
+
+
+def test_a_negative_pause_is_exit_2(capsys):
+    assert bench.main(["--pause", "-1"]) == 2
+    assert "--pause must be at least 0" in capsys.readouterr().err

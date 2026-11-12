@@ -212,3 +212,118 @@ def test_calibrate_shows_judge_errors_as_misses(monkeypatch, capsys):
     monkeypatch.setattr(llm_judge, "groq_call_llm", lambda: (lambda s, u: ""))
     assert judge_audit.main(["calibrate"]) == 0
     assert "judge error:" in capsys.readouterr().out
+
+
+# ---- compare: two judges side by side ----------------------------------------------------------------------------
+def audit_file(tmp_path, name, model, rows):
+    path = tmp_path / name
+    path.write_text(json.dumps({"judge_model": model, "rows": rows}), encoding="utf-8")
+    return str(path)
+
+
+def arow(case_id, response, mechanical, judge, score=5, reason="r"):
+    return {"id": case_id, "response": response, "mechanical_passed": mechanical, "judge_passed": judge,
+            "score": score, "reason": reason}
+
+
+def test_compare_needs_neither_a_key_nor_a_judge_model(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("JUDGE_MODEL")
+    monkeypatch.setattr(llm_judge, "groq_call_llm", lambda: (_ for _ in ()).throw(AssertionError("must not be called")))
+    rows = [arow("ho-rel-sky", SKY_GOOD, True, True)]
+    a, b = audit_file(tmp_path, "a.json", "model-a", rows), audit_file(tmp_path, "b.json", "model-b", rows)
+    assert judge_audit.main(["compare", a, b]) == 0
+    assert "A = 'model-a', B = 'model-b'" in capsys.readouterr().out
+
+
+def test_compare_reports_agreement_between_the_judges_and_with_the_checks(tmp_path, capsys):
+    a_rows = [arow("ho-rel-sky", SKY_GOOD, True, True), arow("ho-hal-dead-speaker", DEAD_BAD, False, False),
+              arow("ho-rel-tides", "tides text", True, True), arow("ho-rel-fridge", "fridge text", True, False)]
+    b_rows = [arow("ho-rel-sky", SKY_GOOD, True, True), arow("ho-hal-dead-speaker", DEAD_BAD, False, False),
+              arow("ho-rel-tides", "tides text", True, False), arow("ho-rel-fridge", "fridge text", True, False)]
+    assert judge_audit.main(["compare", audit_file(tmp_path, "a.json", "A", a_rows), audit_file(tmp_path, "b.json", "B", b_rows)]) == 0
+    out = capsys.readouterr().out
+    assert "answers in both audits: 4; scored by both: 4" in out
+    assert "A and B agree with each other:      3/4 (75%)" in out
+    assert "A agrees with the keyword checks:   3/4 (75%)" in out
+    assert "B agrees with the keyword checks:   2/4 (50%)" in out
+    assert "ho-hal-dead-speaker: A FAIL, B FAIL" in out                       # both judges see the failed answer
+    assert "Where the two judges disagree (1):" in out and "ho-rel-tides  [checks: pass; A PASS 5/5, B FAIL 5/5]" in out
+
+
+def test_compare_shows_the_reasons_and_the_answer_for_each_disagreement(tmp_path, capsys):
+    a = audit_file(tmp_path, "a.json", "A", [arow("ho-rel-sky", SKY_GOOD, True, True, 5, "looks right")])
+    b = audit_file(tmp_path, "b.json", "B", [arow("ho-rel-sky", SKY_GOOD, True, False, 2, "too vague")])
+    judge_audit.main(["compare", a, b])
+    out = capsys.readouterr().out
+    assert "A: looks right" in out and "B: too vague" in out and "answer: " in out
+
+
+def test_compare_says_so_when_the_judges_never_disagree(tmp_path, capsys):
+    rows = [arow("ho-rel-sky", SKY_GOOD, True, True)]
+    judge_audit.main(["compare", audit_file(tmp_path, "a.json", "A", rows), audit_file(tmp_path, "b.json", "B", rows)])
+    assert "none: the two judges gave the same verdict" in capsys.readouterr().out
+
+
+def test_compare_only_uses_answers_present_in_both_audits(tmp_path, capsys):
+    a = audit_file(tmp_path, "a.json", "A", [arow("ho-rel-sky", SKY_GOOD, True, True), arow("ho-rel-tides", "only in a", True, True)])
+    b = audit_file(tmp_path, "b.json", "B", [arow("ho-rel-sky", SKY_GOOD, True, True), arow("ho-rel-fridge", "only in b", True, True)])
+    judge_audit.main(["compare", a, b])
+    assert "answers in both audits: 1; scored by both: 1" in capsys.readouterr().out
+
+
+def test_compare_leaves_out_answers_either_judge_could_not_score(tmp_path, capsys):
+    a = audit_file(tmp_path, "a.json", "A", [arow("ho-rel-sky", SKY_GOOD, True, True), arow("ho-rel-tides", "t", True, None)])
+    b = audit_file(tmp_path, "b.json", "B", [arow("ho-rel-sky", SKY_GOOD, True, True), arow("ho-rel-tides", "t", True, True)])
+    judge_audit.main(["compare", a, b])
+    out = capsys.readouterr().out
+    assert "answers in both audits: 2; scored by both: 1" in out and "agree with each other:      1/1 (100%)" in out
+    assert "A NO VERDICT" not in out
+
+
+def test_a_missing_verdict_is_named_in_the_failed_answers_section(tmp_path, capsys):
+    a = audit_file(tmp_path, "a.json", "A", [arow("ho-hal-dead-speaker", DEAD_BAD, False, None)])
+    b = audit_file(tmp_path, "b.json", "B", [arow("ho-hal-dead-speaker", DEAD_BAD, False, False)])
+    judge_audit.main(["compare", a, b])
+    out = capsys.readouterr().out
+    assert "ho-hal-dead-speaker: A no verdict, B FAIL" in out and "n/a (nothing scored by both)" in out
+
+
+def test_compare_with_no_common_answers_is_exit_2(tmp_path, capsys):
+    a = audit_file(tmp_path, "a.json", "A", [arow("ho-rel-sky", SKY_GOOD, True, True)])
+    b = audit_file(tmp_path, "b.json", "B", [arow("ho-rel-tides", "other", True, True)])
+    assert judge_audit.main(["compare", a, b]) == 2
+    assert "no answers in common" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad", ["missing.json", "notjson", "norows"])
+def test_compare_with_an_unreadable_audit_is_exit_2(tmp_path, capsys, bad):
+    good = audit_file(tmp_path, "good.json", "A", [arow("ho-rel-sky", SKY_GOOD, True, True)])
+    if bad == "notjson":
+        (tmp_path / bad).write_text("{ not json", encoding="utf-8")
+    elif bad == "norows":
+        (tmp_path / bad).write_text("{}", encoding="utf-8")
+    path = str(tmp_path / bad)
+    assert judge_audit.main(["compare", good, path]) == 2
+    assert "Cannot read two audit files" in capsys.readouterr().err
+
+
+# ---- audit the answers from any cases file ------------------------------------------------------------------------------
+def test_audit_can_read_the_cases_from_another_file(tmp_path, monkeypatch, capsys):
+    cases = [{"id": "x-1", "category": "hallucination", "query": "question one", "checks": [{"type": "non_empty"}],
+              "pass_examples": ["fine"], "fail_examples": [""]}]
+    cases_path = tmp_path / "other_cases.json"
+    cases_path.write_text(json.dumps(cases), encoding="utf-8")
+    backend = backend_from({})
+    assert run_audit(tmp_path, monkeypatch, backend, [{"id": "x-1", "responses": ["a real answer"]}], "--cases", str(cases_path)) == 0
+    assert "1 answer(s) judged" in capsys.readouterr().out and backend.calls == ["a real answer"]
+
+
+def test_an_id_from_another_cases_file_is_skipped_without_the_cases_option(tmp_path, monkeypatch, capsys):
+    assert run_audit(tmp_path, monkeypatch, backend_from({}), [{"id": "x-1", "responses": ["a real answer"]}]) == 0
+    assert "0 answer(s) judged" in capsys.readouterr().out
+
+
+def test_an_unreadable_cases_file_is_exit_2_for_the_audit(tmp_path, monkeypatch, capsys):
+    assert run_audit(tmp_path, monkeypatch, backend_from({}), [{"id": "x-1", "responses": ["a"]}],
+                     "--cases", str(tmp_path / "missing.json")) == 2
+    assert "Cannot read cases from" in capsys.readouterr().err

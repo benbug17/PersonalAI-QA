@@ -3,6 +3,8 @@
     GROQ_API_KEY=... python -m evals.heldout_run --freeze      # first run: fingerprint the cases, then measure
     GROQ_API_KEY=... python -m evals.heldout_run --repeat 3    # flags FLAKY cases
     JUDGE_MODEL=...  python -m evals.heldout_run --judge       # also score cases that have a `rubric`
+    GROQ_API_KEY=... python -m evals.heldout_run --cases evals/halluc_confirm_cases.json --freeze --out evals/recorded/x.json
+                                                               # any other cases file; each file gets its own freeze manifest
 
 This is a measurement, not a gate (no baseline file): never tune the system prompt against these cases.
 Exit codes: 0 finished, 1 below --fail-below, 2 setup problem (same convention as evals.run).
@@ -31,18 +33,27 @@ def fingerprint(path: str = None) -> str:
         return hashlib.sha256(f.read()).hexdigest()
 
 
-def freeze_status() -> str:
+def manifest_path_for(cases_path: str = None) -> str:
+    """The default cases file keeps its original manifest; any other file gets '<name>_manifest.json' beside it."""
+    cases_path = cases_path or HELDOUT_PATH
+    if os.path.abspath(cases_path) == os.path.abspath(HELDOUT_PATH):
+        return MANIFEST_PATH
+    return os.path.splitext(cases_path)[0] + "_manifest.json"
+
+
+def freeze_status(cases_path: str = None) -> str:
     """'not_frozen', 'frozen' or 'edited_after_freeze'."""
-    if not os.path.exists(MANIFEST_PATH):
+    manifest = manifest_path_for(cases_path)
+    if not os.path.exists(manifest):
         return "not_frozen"
-    with open(MANIFEST_PATH, encoding="utf-8") as f:
+    with open(manifest, encoding="utf-8") as f:
         recorded = json.load(f).get("sha256")
-    return "frozen" if recorded == fingerprint() else "edited_after_freeze"
+    return "frozen" if recorded == fingerprint(cases_path) else "edited_after_freeze"
 
 
-def write_freeze(n_cases: int) -> None:
-    with open(MANIFEST_PATH, "w", encoding="utf-8") as f:
-        json.dump({"sha256": fingerprint(), "cases": n_cases,
+def write_freeze(n_cases: int, cases_path: str = None) -> None:
+    with open(manifest_path_for(cases_path), "w", encoding="utf-8") as f:
+        json.dump({"sha256": fingerprint(cases_path), "cases": n_cases,
                    "frozen_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}, f, indent=2)
 
 
@@ -65,6 +76,7 @@ def main(argv=None) -> int:
     ap.add_argument("--judge-runs", type=int, default=3)
     ap.add_argument("--freeze", action="store_true", help="record the cases' fingerprint before running")
     ap.add_argument("--fail-below", type=float, default=None, help="exit 1 if the overall pass rate is below this (0-1)")
+    ap.add_argument("--cases", default=None, help="a different cases file (default: evals/heldout_cases.json)")
     ap.add_argument("--out", default=DEFAULT_OUT)
     args = ap.parse_args(argv)
     if args.repeat < 1:
@@ -76,14 +88,20 @@ def main(argv=None) -> int:
         print("GROQ_API_KEY is not set", file=sys.stderr)
         return 2
 
-    cases = runner.load_cases(HELDOUT_PATH)
+    cases_path = args.cases or HELDOUT_PATH
+    try:
+        cases = runner.load_cases(cases_path)
+    except (OSError, ValueError) as exc:
+        print(f"Cannot read cases from {cases_path!r}: {exc}", file=sys.stderr)
+        return 2
+    cases_name = os.path.basename(cases_path)
     if args.freeze:
-        write_freeze(len(cases))
-    status = freeze_status()
+        write_freeze(len(cases), cases_path)
+    status = freeze_status(cases_path)
     if status == "not_frozen":
         print("NOTE: cases are not frozen. When they are final, run with --freeze. Never tune the prompt against them.")
     elif status == "edited_after_freeze":
-        print("WARNING: heldout_cases.json was edited after freezing, so these results are no longer held-out.")
+        print(f"WARNING: {cases_name} was edited after freezing, so these results are no longer held-out.")
 
     if not groq_client.get_learning_assistant_response("Say hello.", temperature=0.0):
         print(f"\nPreflight call to Groq failed (model: {groq_client.get_model()}). Set GROQ_MODEL in .env to a current model.",
@@ -154,7 +172,7 @@ def main(argv=None) -> int:
         print(f"LLM calls: {t['llm_calls']}, tokens used: {t['prompt_tokens']} prompt + {t['completion_tokens']} completion")
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
-        json.dump({"freeze_status": status, "judge": args.judge, "rates": rates, "results": results},
+        json.dump({"cases_file": cases_name, "freeze_status": status, "judge": args.judge, "rates": rates, "results": results},
                   f, indent=2, ensure_ascii=False)
     if args.fail_below is not None and rates["overall"] < args.fail_below:
         return 1

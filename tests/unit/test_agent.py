@@ -392,3 +392,31 @@ def test_two_repairs_in_one_question_both_run_because_each_gets_its_own_id(store
 def test_every_repaired_call_gets_a_distinct_id():
     ids = {agent.recover_tool_call(rejected(), TOOLS).tool_calls[0]["id"] for _ in range(20)}
     assert len(ids) == 20      # providers expect tool-call ids to be unique within a conversation
+
+
+# ---- how many whole-question restarts a result needed -----------------------------------------------------
+def test_a_clean_run_reports_zero_restarts():
+    assert run_agent(FakeGraph(answered("ok")), "q").retries_used == 0
+
+
+def test_each_failed_attempt_before_success_counts_as_one_restart():
+    graph = FakeGraph(GLITCH, GLITCH, answered("ok"))
+    result = run_agent(graph, "q")
+    assert result.answer == "ok" and result.retries_used == 2 and graph.calls == 3
+
+
+def test_an_exhausted_retry_budget_reports_the_restarts_it_spent():
+    assert run_agent(FakeGraph(GLITCH, GLITCH, GLITCH), "q").retries_used == 2
+    assert run_agent(FakeGraph(GLITCH), "q", retries=0).retries_used == 0
+
+
+def test_restarts_before_a_runaway_loop_are_still_counted():
+    from langgraph.errors import GraphRecursionError
+    result = run_agent(FakeGraph(GLITCH, GraphRecursionError("loop")), "q")
+    assert result.truncated and result.retries_used == 1
+
+
+def test_a_nonsensical_retry_count_does_not_crash_and_never_calls_the_graph():
+    graph = FakeGraph(answered("never reached"))
+    result = run_agent(graph, "q", retries=-1)
+    assert graph.calls == 0 and result.truncated and result.retries_used == 0
