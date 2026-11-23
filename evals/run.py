@@ -23,10 +23,15 @@ def main(argv=None) -> int:
     ap.add_argument("--write-baseline", action="store_true")
     ap.add_argument("--repeat", type=int, default=1,
                     help="run each case N times; a case passes only if all N runs pass")
+    ap.add_argument("--pause", type=float, default=0.0,
+                    help="seconds to wait after every call, to stay under a tokens-per-minute limit (about 6-9)")
     ap.add_argument("--out", default=os.path.join(runner.HERE, "results", "latest.json"))
     args = ap.parse_args(argv)
     if args.repeat < 1:
         print("--repeat must be >= 1", file=sys.stderr)
+        return 2
+    if args.pause < 0:
+        print("--pause must be at least 0", file=sys.stderr)
         return 2
 
     load_dotenv()
@@ -53,7 +58,11 @@ def main(argv=None) -> int:
 
     results = []
     for case in runner.load_cases():
-        runs = [runner.run_case(case, llm) for _ in range(args.repeat)]
+        runs = []
+        for _ in range(args.repeat):
+            runs.append(runner.run_case(case, llm))
+            if args.pause > 0:
+                time.sleep(args.pause)
         passed = sum(x["passed"] for x in runs)
         shown = next((x for x in runs if not x["passed"]), runs[0])   # show a failing run if any
         results.append({**shown, "passed": passed == args.repeat, "pass_count": passed, "repeat": args.repeat})

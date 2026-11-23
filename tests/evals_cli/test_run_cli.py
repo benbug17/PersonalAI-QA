@@ -124,3 +124,48 @@ def test_repeat_default_behaves_like_a_single_run(cli_env, capsys):
 def test_invalid_repeat_is_rejected(cli_env, capsys):
     assert run_cli.main(["--out", str(cli_env[0] / "o.json"), "--repeat", "0"]) == 2
     assert "--repeat" in capsys.readouterr().err
+
+
+
+# ---- --pause: spacing calls out on a rate-limited tier ---------------------------------------------------------------------
+def test_a_pause_follows_every_case_run_but_not_the_preflight(cli_env, monkeypatch):
+    slept = []
+    monkeypatch.setattr(run_cli.time, "sleep", slept.append)
+    assert run_cli.main(["--out", str(cli_env[0] / "o.json"), "--pause", "2"]) == 0
+    assert slept == [2.0] * len(runner.load_cases())
+
+
+def test_the_pause_applies_to_every_repeat(cli_env, monkeypatch):
+    slept = []
+    monkeypatch.setattr(run_cli.time, "sleep", slept.append)
+    run_cli.main(["--out", str(cli_env[0] / "o.json"), "--repeat", "2", "--pause", "1.5"])
+    assert slept == [1.5] * (2 * len(runner.load_cases()))
+
+
+def test_without_a_pause_nothing_waits_between_calls(cli_env, monkeypatch):
+    slept = []
+    monkeypatch.setattr(run_cli.time, "sleep", slept.append)
+    run_cli.main(["--out", str(cli_env[0] / "o.json")])
+    assert slept == []
+
+
+def test_the_pause_is_separate_from_the_retry_backoff(cli_env, monkeypatch):
+    slept = []
+    monkeypatch.setattr(run_cli.time, "sleep", slept.append)
+    by_query = cli_env[1]
+    first_case = runner.load_cases()[0]["query"]
+    state = {"failed": False}
+
+    def flaky(q, temperature=0.7):
+        if q == first_case and not state["failed"]:
+            state["failed"] = True
+            return None                                        # one empty reply for the first case
+        return by_query.get(q, "Hello! What would you like to learn?")
+    monkeypatch.setattr(groq_client, "get_learning_assistant_response", flaky)
+    run_cli.main(["--out", str(cli_env[0] / "o.json"), "--pause", "3"])
+    assert slept[:2] == [2, 3.0] and slept.count(3.0) == len(runner.load_cases())     # 2 s backoff, then the pauses
+
+
+def test_a_negative_pause_is_exit_2(cli_env, capsys):
+    assert run_cli.main(["--out", str(cli_env[0] / "o.json"), "--pause", "-1"]) == 2
+    assert "--pause must be at least 0" in capsys.readouterr().err

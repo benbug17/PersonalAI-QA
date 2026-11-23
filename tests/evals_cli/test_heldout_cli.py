@@ -319,3 +319,52 @@ def test_an_unreadable_cases_file_is_exit_2(monkeypatch, tmp_path, capsys, make)
         path.write_text("{ not json", encoding="utf-8")
     assert run(tmp_path, "--cases", str(path)) == 2
     assert "Cannot read cases from" in capsys.readouterr().err
+
+
+# ---- --pause: spacing calls out on a rate-limited tier ---------------------------------------------------------------------
+def record_sleeps(monkeypatch):
+    slept = []
+    monkeypatch.setattr(heldout_run.time, "sleep", slept.append)
+    return slept
+
+
+def test_a_pause_follows_every_model_call_but_not_the_preflight(monkeypatch, tmp_path):
+    slept = record_sleeps(monkeypatch)
+    stub_llm(monkeypatch)
+    assert run(tmp_path, "--pause", "2") == 0
+    assert slept == [2.0] * len(CASES)                   # one per case; the preflight call is not paced
+
+
+def test_the_pause_applies_to_every_repeat(monkeypatch, tmp_path):
+    slept = record_sleeps(monkeypatch)
+    stub_llm(monkeypatch)
+    run(tmp_path, "--repeat", "2", "--pause", "1.5")
+    assert slept == [1.5] * (2 * len(CASES))
+
+
+def test_no_pause_means_no_waiting_between_calls(monkeypatch, tmp_path):
+    slept = record_sleeps(monkeypatch)
+    stub_llm(monkeypatch)
+    run(tmp_path)
+    assert slept == []
+
+
+def test_the_pause_also_works_with_a_custom_cases_file(monkeypatch, tmp_path):
+    slept = record_sleeps(monkeypatch)
+    stub_llm(monkeypatch)
+    run(tmp_path, "--cases", write_cases(tmp_path / "halluc.json"), "--pause", "3")
+    assert slept == [3.0, 3.0]
+
+
+def test_the_pause_does_not_replace_the_retry_backoff_for_a_failed_call(monkeypatch, tmp_path):
+    slept = record_sleeps(monkeypatch)
+    replies = iter(["fine", None, "fine", "fine"])             # preflight ok; first case's call comes back empty once
+    monkeypatch.setattr(groq_client, "get_learning_assistant_response", lambda q, temperature=0.7: next(replies, "fine"))
+    run(tmp_path, "--cases", write_cases(tmp_path / "halluc.json"), "--pause", "3")
+    assert slept == [2, 3.0, 3.0]                                # a 2 s backoff, then one pause after each of the two cases
+
+
+def test_a_negative_pause_is_exit_2(monkeypatch, tmp_path, capsys):
+    stub_llm(monkeypatch)
+    assert run(tmp_path, "--pause", "-1") == 2
+    assert "--pause must be at least 0" in capsys.readouterr().err

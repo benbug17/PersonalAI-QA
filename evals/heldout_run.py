@@ -7,6 +7,10 @@
                                                                # any other cases file; each file gets its own freeze manifest
 
 This is a measurement, not a gate (no baseline file): never tune the system prompt against these cases.
+
+On a rate-limited free tier (8,000 tokens per minute for gpt-oss-20b on one account) rapid back-to-back calls get
+throttled, and a throttled call can come back empty, which would look like the model failing a case. --pause N waits
+N seconds after every model call so a measurement is not contaminated by that (about 6 to 9 for these short cases).
 Exit codes: 0 finished, 1 below --fail-below, 2 setup problem (same convention as evals.run).
 """
 import argparse
@@ -72,6 +76,8 @@ def run_once(case: dict, llm, judge_fn=None) -> dict:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repeat", type=int, default=1, help="run each case N times; passes only if all N pass")
+    ap.add_argument("--pause", type=float, default=0.0,
+                    help="seconds to wait after every call, to stay under a tokens-per-minute limit (about 6-9)")
     ap.add_argument("--judge", action="store_true", help="also score cases that have a rubric with the LLM judge")
     ap.add_argument("--judge-runs", type=int, default=3)
     ap.add_argument("--freeze", action="store_true", help="record the cases' fingerprint before running")
@@ -81,6 +87,9 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     if args.repeat < 1:
         print("--repeat must be >= 1", file=sys.stderr)
+        return 2
+    if args.pause < 0:
+        print("--pause must be at least 0", file=sys.stderr)
         return 2
 
     load_dotenv()
@@ -143,7 +152,11 @@ def main(argv=None) -> int:
     results = []
     try:
         for case in cases:
-            runs = [run_once(case, llm, judge_fn) for _ in range(args.repeat)]
+            runs = []
+            for _ in range(args.repeat):
+                runs.append(run_once(case, llm, judge_fn))
+                if args.pause > 0:
+                    time.sleep(args.pause)
             passed = sum(x["passed"] for x in runs)
             shown = next((x for x in runs if not x["passed"]), runs[0])
             results.append({**shown, "passed": passed == args.repeat, "pass_count": passed, "repeat": args.repeat,
