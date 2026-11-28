@@ -1,0 +1,6 @@
+Collecting numpy
+  Using cached numpy-2.4.6-cp311-cp311-win_amd64.whl.metadata (6.6 kB)
+Downloading numpy-2.4.6-cp311-cp311-win_amd64.whl (12.6 MB)
+   ---------------------------------------- 12.6/12.6 MB 3.1 MB/s  0:00:04
+Installing collected packages: numpy
+Successfully installed numpy-2.4.6
